@@ -101,5 +101,16 @@ Treated as approved product requirements and woven into the existing architectur
   Image thumbnails + full viewer; document cards with open/download; uploading/sent/failed·retry
   states; respects personal/professional/hybrid context. Conversation list shows 📷/📄 labels.
 - LOCKED (not implemented, per instruction): future QR deep-link install flow; no hardcoded deep links.
+
+## About Traksha — Content & UX Charter v1.0 implemented (session 5)
+Rebuilt /app/frontend/app/settings/about.tsx to the master charter IA (verbatim source of truth):
+Introduction narrative → Why Traksha Exists (problem / the question / the idea / what we solve /
+what should differ) → 3 progressive-depth cards (The simple idea · For everyone, open by default;
+How it actually works · For the curious, incl. QR consent-by-design; Technical transparency ·
+For advanced readers, version-aware) → What Traksha Can Help Solve → What Makes Traksha Different
+(differentiator + six principles) → separate FAQ accordion (7 groups) → Closing thought + v1.0.0.
+Governance honored: no invented founder story, "designed to/intended to" language, current vs
+future clearly separated, no overclaims/certifications, Safety kept separate (links to Settings →
+Safety, does not replace it). Depth cards show increasing-depth dots. Verified via screenshot.
 - Tests: backend 20/20 attachment + regression green (test_attachments.py); frontend flows verified
   (iteration_3.json).
