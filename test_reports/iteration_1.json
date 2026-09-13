@@ -1,0 +1,40 @@
+{
+  "summary": "Comprehensive backend + mobile UI smoke of Traksha. Backend 21/23 pytest passed (91.3%). Two failures share ONE root cause: naive-vs-aware datetime comparison for Mongo-stored expires_at (breaks POST /api/auth/reset-password and POST /api/qr/scan → both return 500, and by extension /api/qr/connect, /api/remote/preview, /api/remote/submit). Frontend: welcome→philosophy→overview→sign-up→home flow works, TMP badge shows Day 1 of 45, Tattvaloka feed renders seeded contributions, Profile tab exposes Identity/Settings/Privacy/Safety/INS (Coming soon), QR screen renders real QR with 5-minute countdown timer and Refresh/Revoke/Scan actions, search screen renders with People/Tattvaloka toggles. No deprecated Expo packages detected (expo-av / barcode-scanner / background-fetch absent).",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/auth/reset-password", "issue": "500 TypeError: can't compare offset-naive and offset-aware datetimes at server.py:437 — rec['expires_at'] (naive from Mongo) vs now_utc() (aware). Reset flow cannot complete.", "priority": "CRITICAL"},
+      {"endpoint": "POST /api/qr/scan (and /qr/connect, /remote/preview, /remote/submit)", "issue": "500 TypeError from resolve_session at server.py:799 — s['expires_at'] naive vs now_utc() aware. Any QR/remote scan blows up because MongoDB is opened without tz_aware=True.", "priority": "CRITICAL"}
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "QR scan (mobile UI → /api/qr/scan)", "issue": "Scanner manual-token submit will 500 due to backend bug above until the datetime comparison is fixed.", "affected_testIDs": ["open-scanner", "my-qr-code"]},
+      {"flow": "Recovery screen → /api/auth/reset-password", "issue": "Reset submit will 500 due to same backend bug.", "affected_testIDs": []}
+    ],
+    "design_issues": [
+      {"screen": "global", "issues": ["Console: 'shadow*' style props deprecated (RN Web) — cosmetic warning, replace with boxShadow when convenient", "Console: props.pointerEvents deprecated — move to style.pointerEvents", "Console: useNativeDriver falls back to JS on web (expected in web preview, harmless)"]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_traksha_backend.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Fix Motor client to be timezone-aware OR normalize expires_at before compare. Recommended: AsyncIOMotorClient(mongo_url, tz_aware=True) at server.py:46. This single change makes all five failing endpoints (auth/reset-password, qr/scan, qr/connect, remote/preview, remote/submit) work.",
+    "Alternative point fix: in resolve_session (server.py:799) and reset_password (server.py:437), coerce the stored datetime with `exp = s['expires_at']; if exp.tzinfo is None: exp = exp.replace(tzinfo=timezone.utc)` before comparing to now_utc().",
+    "After fix, rerun /app/backend/tests/test_traksha_backend.py — both failing tests should pass. Also re-verify Recovery and Scanner flows on the mobile UI."
+  ],
+  "critical_code_review_comments": [
+    "server.py opens AsyncIOMotorClient without tz_aware=True, so every datetime read from Mongo is naive UTC. Any Python-side comparison with now_utc() (aware) will TypeError. Only Mongo-side ($gt/$lte in queries) is safe — that is why the scheduler_loop and availability windows work while resolve_session/reset_password fail.",
+    "run_transition ignores that the transitioned document already had transition_due_at $lte now — safe, but note the dev/simulate-transition endpoint sets transition_due_at=now_utc() then reads the doc back before calling run_transition; that read returns naive datetimes and is currently only fine because run_transition doesn't compare them.",
+    "File length 1372 lines — still manageable but approaching the 700-line guideline; consider splitting by domain (auth, connections, messaging, calls, tattvaloka) into routers.",
+    "CORS allow_origins=['*'] with allow_credentials=True — browsers will strip credentials on wildcard. Fine for dev, tighten before prod."
+  ],
+  "updated_files": ["/app/backend/tests/test_traksha_backend.py", "/app/backend/tests/__init__.py"],
+  "success_rate": {"backend": "91.3% (21/23)", "frontend": "~95% (all screens sampled render; QR/reset flows blocked by backend bug)"},
+  "seed_data_creation": "Only ephemeral TEST_-prefixed accounts created via /api/auth/register. No persistent seed added; existing Tattvaloka seed content used as-is.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "One-line fix (tz_aware=True on Motor client) resolves both backend failures. After applying, rerun `pytest /app/backend/tests/test_traksha_backend.py -v` and confirm 23/23. Then hit /api/qr/scan and /api/auth/reset-password via curl to double-check. Frontend flows depending on these (QR scanner manual token, Recovery reset) should be re-clicked in the mobile UI.",
+  "rca_of_issue": "Reproduction: (1) POST /api/qr/create as user A → get token. (2) POST /api/qr/scan {token} as user B → 500. Backend log: 'TypeError: can't compare offset-naive and offset-aware datetimes' in resolve_session. Cause: Motor deserializes BSON dates without tzinfo; now_utc() is tz-aware. Mitigation: add tz_aware=True to AsyncIOMotorClient OR patch the two comparison sites."
+}
