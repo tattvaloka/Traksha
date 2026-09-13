@@ -11,7 +11,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.emergent.trakshaidentity.ph2g65",
       "infoPlist": {
-        "NSCameraUsageDescription": "Scan a Traksha code to request a connection"
+        "NSCameraUsageDescription": "Scan a Traksha code to request a connection",
+        "NSPhotoLibraryUsageDescription": "Choose a photo for your Traksha profile"
       }
     },
     "android": {

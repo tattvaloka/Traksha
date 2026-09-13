@@ -52,6 +52,12 @@ export default function Profile() {
             <Divider />
             <Row icon="qr-code-outline" label="My connection QR" onPress={() => router.push("/qr")} testID="my-qr-row" />
             <Divider />
+            {user.identity_type === "TRK" && (
+              <>
+                <Row icon="documents-outline" label="Contribution drafts" onPress={() => router.push("/drafts")} testID="drafts-row" />
+                <Divider />
+              </>
+            )}
             <Row icon="finger-print-outline" label="Identity" onPress={() => router.push("/settings/identity")} testID="identity-row" />
           </Card>
         </View>

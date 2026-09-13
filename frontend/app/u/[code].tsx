@@ -24,6 +24,8 @@ export default function PublicProfile() {
   const [connectSheet, setConnectSheet] = useState(false);
   const [callSheet, setCallSheet] = useState(false);
   const [moreSheet, setMoreSheet] = useState(false);
+  const [manageSheet, setManageSheet] = useState(false);
+  const [noteText, setNoteText] = useState("");
 
   const profile = useQuery({ queryKey: ["profile", code], queryFn: () => api.get(`/profile/${code}`) });
 

@@ -47,6 +47,8 @@ export default function Conversation() {
 
   const serverMsgs: Msg[] = q.data?.messages ?? [];
   const other = q.data?.other;
+  const connectionContext: string = q.data?.connection_context ?? ctx;
+  const isHybrid = connectionContext === "both";
 
   const merged = useMemo(() => {
     const serverClientIds = new Set(serverMsgs.map((m) => m.client_id).filter(Boolean));
@@ -98,14 +100,38 @@ export default function Conversation() {
         title={other?.display_name || "Conversation"}
         right={<IconButton icon="call-outline" onPress={() => setCallSheet(true)} testID="conv-call" />}
       />
-      <View style={{ paddingHorizontal: 16, paddingBottom: 8, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: colors.border }}>
-        <ContextChip context={ctx} />
+      <View style={{ paddingHorizontal: 16, paddingVertical: 8, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: colors.border, gap: 8 }}>
+        {isHybrid ? (
+          <View style={{ flexDirection: "row", gap: 6 }}>
+            {(["personal", "professional"] as const).map((c) => {
+              const sel = ctx === c;
+              const accent = c === "personal" ? colors.personalAccent : colors.professionalAccent;
+              return (
+                <Pressable
+                  key={c}
+                  testID={`ctx-switch-${c}`}
+                  onPress={() => { if (!sel) router.replace(`/conversation/${connId}/${c}`); }}
+                  style={{ height: 32, paddingHorizontal: 12, borderRadius: 999, justifyContent: "center", backgroundColor: sel ? accent : colors.surfaceTertiary, borderWidth: 1, borderColor: sel ? accent : colors.border }}
+                >
+                  <T style={{ fontFamily: fonts.sans, fontSize: 12, fontWeight: "600", color: sel ? "#FFFFFF" : colors.textSecondary, textTransform: "capitalize" }}>{c}</T>
+                </Pressable>
+              );
+            })}
+          </View>
+        ) : (
+          <ContextChip context={ctx} />
+        )}
         {other ? (
           <Pressable onPress={() => router.push(`/u/${other.identity_code}`)}>
             <T variant="caption" color={colors.brand}>View profile</T>
           </Pressable>
         ) : null}
       </View>
+      {isHybrid ? (
+        <View style={{ paddingHorizontal: 16, paddingTop: 8 }}>
+          <T variant="caption" color={colors.muted}>Hybrid connection · you're in the {ctx} context</T>
+        </View>
+      ) : null}
 
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={{ flex: 1 }}>
         {q.isLoading ? (

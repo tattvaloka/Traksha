@@ -22,10 +22,13 @@ from pathlib import Path
 from typing import Optional, Dict, Set, Any
 
 import jwt
+import requests
 from fastapi import (
     FastAPI, APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect,
-    Query, Header,
+    Query, Header, UploadFile, File,
 )
+from fastapi.responses import Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from passlib.context import CryptContext
@@ -54,6 +57,58 @@ TMP_JOURNEY_DAYS = 45
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 ID_ALPHABET = string.ascii_uppercase + string.digits  # 36 symbols, non-sequential
+
+# --- Emergent managed Object Storage (profile photos) ---------------------
+STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
+STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
+EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
+APP_NAME = "traksha"
+_storage_key: Optional[str] = None
+
+
+def init_storage(force: bool = False) -> Optional[str]:
+    global _storage_key
+    if _storage_key and not force:
+        return _storage_key
+    if not EMERGENT_KEY:
+        return None
+    resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_KEY}, timeout=30)
+    resp.raise_for_status()
+    _storage_key = resp.json()["storage_key"]
+    return _storage_key
+
+
+def put_object(path: str, data: bytes, content_type: str) -> dict:
+    key = init_storage()
+    if not key:
+        raise HTTPException(503, "Storage is not configured")
+    resp = requests.put(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key, "Content-Type": content_type}, data=data, timeout=120,
+    )
+    if resp.status_code == 503:
+        init_storage(force=True)
+        resp = requests.put(
+            f"{STORAGE_URL}/objects/{path}",
+            headers={"X-Storage-Key": _storage_key, "Content-Type": content_type}, data=data, timeout=120,
+        )
+    if resp.status_code == 402:
+        raise HTTPException(402, "Storage quota reached")
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_object(path: str):
+    key = init_storage()
+    if not key:
+        raise HTTPException(404, "Not found")
+    resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+    if resp.status_code == 503:
+        init_storage(force=True)
+        resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": _storage_key}, timeout=60)
+    if resp.status_code >= 400:
+        raise HTTPException(404, "Not found")
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
 
 def now_utc() -> datetime:
@@ -191,6 +246,10 @@ async def scheduler_loop():
 async def lifespan(app: FastAPI):
     await ensure_indexes()
     await seed_content()
+    try:
+        await run_in_threadpool(init_storage)
+    except Exception as e:  # noqa
+        logger.error("storage init failed: %s", e)
     task = asyncio.create_task(scheduler_loop())
     yield
     task.cancel()
@@ -492,6 +551,35 @@ async def update_profile(body: ProfileUpdate, u: dict = Depends(require_user)):
     return private_me(u)
 
 
+ALLOWED_IMAGE_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/heic": "heic"}
+MAX_PHOTO_BYTES = 8 * 1024 * 1024
+
+
+@api.post("/profile/photo")
+async def upload_profile_photo(file: UploadFile = File(...), u: dict = Depends(require_user)):
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    ext = ALLOWED_IMAGE_TYPES.get(content_type)
+    if not ext:
+        raise HTTPException(400, "Please choose a JPEG, PNG or WebP image")
+    data = await file.read()
+    if len(data) > MAX_PHOTO_BYTES:
+        raise HTTPException(413, "Image is too large (max 8MB)")
+    path = f"{APP_NAME}/uploads/{u['_id']}/{new_id()}.{ext}"
+    result = await run_in_threadpool(put_object, path, data, content_type)
+    stored = result["path"]
+    photo_url = f"/api/files/{stored}"
+    await db.users.update_one({"_id": u["_id"]}, {"$set": {"photo_url": photo_url, "photo_path": stored}})
+    fresh = await db.users.find_one({"_id": u["_id"]})
+    return private_me(fresh)
+
+
+@api.get("/files/{path:path}")
+async def serve_file(path: str):
+    """Public read for profile photos (photos are public profile data)."""
+    content, ctype = await run_in_threadpool(get_object, path)
+    return Response(content=content, media_type=ctype, headers={"Cache-Control": "public, max-age=86400"})
+
+
 @api.put("/settings/privacy")
 async def update_privacy(body: PrivacyUpdate, u: dict = Depends(require_user)):
     privacy = u.get("privacy", DEFAULT_PRIVACY.copy())
@@ -582,7 +670,8 @@ async def relationship_state(a: str, b: str) -> dict:
     conn = await db.connections.find_one({"members": {"$all": [a, b]}, "status": "connected"})
     if conn:
         return {"status": "connected", "connection_id": conn["_id"],
-                "context": conn.get("context", "personal")}
+                "context": conn.get("context", "personal"),
+                "note": (conn.get("notes") or {}).get(a)}
     req = await db.connection_requests.find_one({"from_id": a, "to_id": b, "status": "pending"})
     if req:
         return {"status": "outgoing", "request_id": req["_id"]}
@@ -594,10 +683,11 @@ async def relationship_state(a: str, b: str) -> dict:
     return {"status": "none"}
 
 
-def serialize_connection(c: dict, other: dict) -> dict:
+def serialize_connection(c: dict, other: dict, me_id: str) -> dict:
     return {
         "id": c["_id"], "context": c.get("context", "personal"),
         "created_at": iso(c.get("created_at")), "other": public_profile(other),
+        "note": (c.get("notes") or {}).get(me_id),
     }
 
 
@@ -659,7 +749,7 @@ async def list_connections(u: dict = Depends(require_user)):
         other_id = [m for m in c["members"] if m != u["_id"]][0]
         other = await db.users.find_one({"_id": other_id})
         if other and not other.get("deleted_at"):
-            out.append(serialize_connection(c, other))
+            out.append(serialize_connection(c, other, u["_id"]))
     return out
 
 
@@ -755,6 +845,21 @@ async def set_connection_context(conn_id: str, body: ContextUpdate, u: dict = De
         raise HTTPException(404, "Connection not found")
     await db.connections.update_one({"_id": conn_id}, {"$set": {"context": body.context}})
     return {"ok": True, "context": body.context}
+
+
+class NoteUpdate(BaseModel):
+    note: str = Field(default="", max_length=1000)
+
+
+@api.put("/connections/{conn_id}/note")
+async def set_connection_note(conn_id: str, body: NoteUpdate, u: dict = Depends(require_user)):
+    """A private note visible only to the viewer who wrote it."""
+    c = await db.connections.find_one({"_id": conn_id, "members": u["_id"]})
+    if not c:
+        raise HTTPException(404, "Connection not found")
+    note = body.note.strip()
+    await db.connections.update_one({"_id": conn_id}, {"$set": {f"notes.{u['_id']}": note}})
+    return {"ok": True, "note": note}
 
 
 @api.delete("/connections/{conn_id}")
@@ -971,6 +1076,7 @@ async def get_messages(connection_id: str, context: str, u: dict = Depends(requi
         {"$set": {"read": True}})
     return {
         "connection_id": connection_id, "context": context,
+        "connection_context": c.get("context", "personal"),
         "other": public_profile(other) if other else None,
         "messages": [serialize_message(m) for m in msgs],
     }
@@ -1209,7 +1315,7 @@ def serialize_contribution(c: dict) -> dict:
 
 @api.get("/contributions")
 async def list_contributions(u: dict = Depends(require_user)):
-    cur = db.contributions.find({"deleted_at": None}).sort("created_at", -1).limit(50)
+    cur = db.contributions.find({"deleted_at": None, "status": {"$ne": "draft"}}).sort("created_at", -1).limit(50)
     return [serialize_contribution(c) async for c in cur]
 
 
@@ -1217,6 +1323,8 @@ async def list_contributions(u: dict = Depends(require_user)):
 async def get_contribution(cid: str, u: dict = Depends(require_user)):
     c = await db.contributions.find_one({"_id": cid, "deleted_at": None})
     if not c:
+        raise HTTPException(404, "Contribution not found")
+    if c.get("status") == "draft" and c.get("author_id") != u["_id"]:
         raise HTTPException(404, "Contribution not found")
     return serialize_contribution(c)
 
@@ -1235,10 +1343,86 @@ async def create_contribution(body: ContributionIn, u: dict = Depends(require_us
         "_id": cid, "id": cid, "title": body.title.strip(), "body": body.body.strip(),
         "author_id": u["_id"], "author_name": u.get("display_name"),
         "author_code": u["identity_code"], "created_at": now_utc(),
-        "comment_count": 0, "deleted_at": None,
+        "comment_count": 0, "deleted_at": None, "status": "published",
     }
     await db.contributions.insert_one(doc)
     return serialize_contribution(doc)
+
+
+# --- Contribution drafts (TRK) --------------------------------------------
+class DraftIn(BaseModel):
+    title: str = Field(default="", max_length=140)
+    body: str = Field(default="", max_length=8000)
+
+
+def serialize_draft(c: dict) -> dict:
+    return {
+        "id": c["_id"], "title": c.get("title", ""), "body": c.get("body", ""),
+        "updated_at": iso(c.get("updated_at") or c.get("created_at")),
+        "status": "draft",
+    }
+
+
+@api.get("/drafts")
+async def list_drafts(u: dict = Depends(require_user)):
+    cur = db.contributions.find({"author_id": u["_id"], "status": "draft", "deleted_at": None}).sort("updated_at", -1).limit(50)
+    return [serialize_draft(c) async for c in cur]
+
+
+@api.post("/drafts")
+async def create_draft(body: DraftIn, u: dict = Depends(require_user)):
+    if u["identity_type"] != "TRK":
+        raise HTTPException(403, "Drafts are available once your identity is established (TRK).")
+    cid = new_id()
+    doc = {
+        "_id": cid, "id": cid, "title": body.title.strip(), "body": body.body.strip(),
+        "author_id": u["_id"], "author_name": u.get("display_name"),
+        "author_code": u["identity_code"], "created_at": now_utc(), "updated_at": now_utc(),
+        "comment_count": 0, "deleted_at": None, "status": "draft",
+    }
+    await db.contributions.insert_one(doc)
+    return serialize_draft(doc)
+
+
+@api.get("/drafts/{did}")
+async def get_draft(did: str, u: dict = Depends(require_user)):
+    c = await db.contributions.find_one({"_id": did, "author_id": u["_id"], "status": "draft", "deleted_at": None})
+    if not c:
+        raise HTTPException(404, "Draft not found")
+    return serialize_draft(c)
+
+
+@api.put("/drafts/{did}")
+async def update_draft(did: str, body: DraftIn, u: dict = Depends(require_user)):
+    c = await db.contributions.find_one({"_id": did, "author_id": u["_id"], "status": "draft", "deleted_at": None})
+    if not c:
+        raise HTTPException(404, "Draft not found")
+    await db.contributions.update_one({"_id": did}, {"$set": {"title": body.title.strip(), "body": body.body.strip(), "updated_at": now_utc()}})
+    fresh = await db.contributions.find_one({"_id": did})
+    return serialize_draft(fresh)
+
+
+@api.delete("/drafts/{did}")
+async def delete_draft(did: str, u: dict = Depends(require_user)):
+    c = await db.contributions.find_one({"_id": did, "author_id": u["_id"], "status": "draft"})
+    if not c:
+        raise HTTPException(404, "Draft not found")
+    await db.contributions.update_one({"_id": did}, {"$set": {"deleted_at": now_utc()}})
+    return {"ok": True}
+
+
+@api.post("/drafts/{did}/publish")
+async def publish_draft(did: str, u: dict = Depends(require_user)):
+    if u["identity_type"] != "TRK":
+        raise HTTPException(403, "Publishing is available once your identity is established (TRK).")
+    c = await db.contributions.find_one({"_id": did, "author_id": u["_id"], "status": "draft", "deleted_at": None})
+    if not c:
+        raise HTTPException(404, "Draft not found")
+    if not (c.get("title") or "").strip() or not (c.get("body") or "").strip():
+        raise HTTPException(400, "A title and body are required to publish")
+    await db.contributions.update_one({"_id": did}, {"$set": {"status": "published", "created_at": now_utc()}})
+    fresh = await db.contributions.find_one({"_id": did})
+    return serialize_contribution(fresh)
 
 
 def serialize_comment(c: dict) -> dict:

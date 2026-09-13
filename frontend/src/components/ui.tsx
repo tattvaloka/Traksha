@@ -13,6 +13,7 @@ import {
 import { Image } from "expo-image";
 import { Ionicons } from "@react-native-vector-icons/ionicons";
 import { useTheme, makeStyles, fonts, radius, space, ThemeColors } from "@/src/theme";
+import { mediaUrl } from "@/src/api/client";
 
 // ---------------------------------------------------------------------------
 // Text helpers
@@ -309,10 +310,11 @@ export function Avatar({ name, uri, size = 44 }: { name?: string; uri?: string |
     .slice(0, 2)
     .map((s) => s[0]?.toUpperCase())
     .join("");
-  if (uri) {
+  const resolved = mediaUrl(uri);
+  if (resolved) {
     return (
       <Image
-        source={{ uri }}
+        source={{ uri: resolved }}
         style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: colors.surfaceTertiary }}
         contentFit="cover"
       />

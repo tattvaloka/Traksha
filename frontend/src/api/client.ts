@@ -57,3 +57,33 @@ export const api = {
   put: <T = any>(p: string, body?: any) => request<T>(p, { method: "PUT", body }),
   del: <T = any>(p: string, body?: any) => request<T>(p, { method: "DELETE", body }),
 };
+
+/** Resolve a possibly-relative media path (e.g. "/api/files/..") to an absolute URL. */
+export function mediaUrl(uri?: string | null): string | undefined {
+  if (!uri) return undefined;
+  if (/^https?:\/\//.test(uri)) return uri;
+  return `${RAW_BASE}${uri}`;
+}
+
+/** Upload a picked image to the backend; returns the updated Me. */
+export async function uploadProfilePhoto(asset: { uri: string; mimeType?: string | null; fileName?: string | null }) {
+  const token = await storage.secureGet<string>(TOKEN_KEY, "");
+  const type = asset.mimeType || "image/jpeg";
+  const name = asset.fileName || `photo.${type.split("/")[1] || "jpg"}`;
+  const form = new FormData();
+  if (typeof window !== "undefined" && (globalThis as any).document) {
+    const blob = await (await fetch(asset.uri)).blob();
+    form.append("file", blob, name);
+  } else {
+    form.append("file", { uri: asset.uri, name, type } as any);
+  }
+  const res = await fetch(`${API_BASE}/profile/photo`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    body: form,
+  });
+  const text = await res.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!res.ok) throw new ApiError(data?.detail || "Upload failed", res.status);
+  return data;
+}
