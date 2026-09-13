@@ -59,26 +59,8 @@ export default function Profile() {
               </>
             )}
             <Row icon="finger-print-outline" label="Identity" onPress={() => router.push("/settings/identity")} testID="identity-row" />
-          </Card>
-        </View>
-
-        <View style={{ paddingHorizontal: 16, marginBottom: 8 }}>
-          <Card style={{ padding: 0, overflow: "hidden" }}>
+            <Divider />
             <Row icon="settings-outline" label="Settings" onPress={() => router.push("/settings")} testID="settings-row" />
-            <Divider />
-            <Row icon="shield-outline" label="Privacy" onPress={() => router.push("/settings/privacy")} testID="privacy-row" />
-            <Divider />
-            <Row icon="alert-circle-outline" label="Safety" onPress={() => router.push("/settings/safety")} testID="safety-row" />
-          </Card>
-        </View>
-
-        <View style={{ paddingHorizontal: 16 }}>
-          <Card style={{ backgroundColor: colors.insBg, borderColor: colors.insBorder, flexDirection: "row", alignItems: "center", gap: 12 }}>
-            <Ionicons name="business-outline" size={20} color={colors.insText} />
-            <View style={{ flex: 1 }}>
-              <T variant="label" color={colors.insText}>Institutions (INS)</T>
-              <T variant="caption" color={colors.insText}>Coming soon</T>
-            </View>
           </Card>
         </View>
       </ScrollView>

@@ -49,7 +49,13 @@ export default function Messages() {
                   </View>
                   <ContextChip context={item.context} />
                   <T variant="bodySm" color={colors.textSecondary} numberOfLines={1}>
-                    {item.last_message?.text || "No messages yet"}
+                    {item.last_message
+                      ? item.last_message.type === "image"
+                        ? "📷 Photo"
+                        : item.last_message.type === "file"
+                        ? `📄 ${item.last_message.attachment?.name || "Document"}`
+                        : item.last_message.text || "No messages yet"
+                      : "No messages yet"}
                   </T>
                 </View>
               </Card>

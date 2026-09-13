@@ -25,7 +25,7 @@ import jwt
 import requests
 from fastapi import (
     FastAPI, APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect,
-    Query, Header, UploadFile, File,
+    Query, Header, UploadFile, File, Form,
 )
 from fastapi.responses import Response
 from fastapi.concurrency import run_in_threadpool
@@ -1032,6 +1032,8 @@ def serialize_message(m: dict) -> dict:
         "sender_id": m["sender_id"], "text": m["text"],
         "status": m.get("status", "sent"), "created_at": iso(m.get("created_at")),
         "client_id": m.get("client_id"),
+        "type": m.get("type", "text"),
+        "attachment": m.get("attachment"),
     }
 
 
@@ -1113,6 +1115,101 @@ async def send_message(connection_id: str, body: SendMessageIn, u: dict = Depend
             other_id, "message", f"New message from {u.get('display_name')}",
             body.text.strip()[:80], {"route": f"/conversation/{connection_id}/{body.context}"})
     return payload
+
+
+# --- Attachments (images + documents) -------------------------------------
+ATTACH_DOC_TYPES = {
+    "application/pdf": "pdf",
+    "application/msword": "doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.ms-excel": "xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.ms-powerpoint": "ppt",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    "text/plain": "txt",
+    "text/csv": "csv",
+}
+MAX_ATTACH_BYTES = 20 * 1024 * 1024
+
+
+@api.post("/conversations/{connection_id}/attachments")
+async def upload_attachment(
+    connection_id: str,
+    file: UploadFile = File(...),
+    context: str = Form("personal"),
+    client_id: Optional[str] = Form(None),
+    width: Optional[int] = Form(None),
+    height: Optional[int] = Form(None),
+    u: dict = Depends(require_user),
+):
+    if context not in ("personal", "professional"):
+        raise HTTPException(400, "Invalid context")
+    c = await get_connection_for(u["_id"], connection_id)
+    other_id = [m for m in c["members"] if m != u["_id"]][0]
+    if await is_blocked_between(u["_id"], other_id):
+        raise HTTPException(403, "This action is not available")
+
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    if content_type in ALLOWED_IMAGE_TYPES:
+        kind, ext = "image", ALLOWED_IMAGE_TYPES[content_type]
+    elif content_type in ATTACH_DOC_TYPES:
+        kind, ext = "file", ATTACH_DOC_TYPES[content_type]
+    else:
+        raise HTTPException(415, "This file type is not supported")
+
+    data = await file.read()
+    if len(data) == 0:
+        raise HTTPException(400, "The file appears to be empty")
+    if len(data) > MAX_ATTACH_BYTES:
+        raise HTTPException(413, "File is too large (max 20MB)")
+
+    mid = new_id()
+    path = f"{APP_NAME}/attachments/{connection_id}/{mid}.{ext}"
+    result = await run_in_threadpool(put_object, path, data, content_type)
+    stored = result["path"]
+
+    original_name = (file.filename or f"{kind}.{ext}").strip()[:180]
+    attachment = {
+        "url": f"/api/messages/{mid}/attachment",
+        "kind": kind,
+        "name": original_name,
+        "size": len(data),
+        "mime": content_type,
+        "width": width,
+        "height": height,
+    }
+    conv_id = conversation_id_for(connection_id, context)
+    online = ws_manager.is_online(other_id)
+    m = {
+        "_id": mid, "conversation_id": conv_id, "connection_id": connection_id,
+        "context": context, "sender_id": u["_id"], "text": "",
+        "type": kind, "attachment": attachment, "attachment_storage": stored,
+        "status": "delivered" if online else "sent", "read": False,
+        "created_at": now_utc(), "client_id": client_id,
+    }
+    await db.messages.insert_one(m)
+    payload = serialize_message(m)
+    await ws_manager.send(other_id, {"type": "message", "message": payload})
+    if not online:
+        label = "Photo" if kind == "image" else original_name
+        await create_notification(
+            other_id, "message", f"New attachment from {u.get('display_name')}",
+            label[:80], {"route": f"/conversation/{connection_id}/{context}"})
+    return payload
+
+
+@api.get("/messages/{message_id}/attachment")
+async def serve_message_attachment(message_id: str, u: dict = Depends(require_user)):
+    """Authorized attachment read — only connection members can fetch it."""
+    m = await db.messages.find_one({"_id": message_id})
+    if not m or not m.get("attachment_storage"):
+        raise HTTPException(404, "Not found")
+    c = await db.connections.find_one({"_id": m["connection_id"], "members": u["_id"]})
+    if not c:
+        raise HTTPException(403, "This action is not available")
+    content, ctype = await run_in_threadpool(get_object, m["attachment_storage"])
+    return Response(content=content, media_type=ctype,
+                    headers={"Cache-Control": "private, max-age=86400"})
 
 
 # ===========================================================================

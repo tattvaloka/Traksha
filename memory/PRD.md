@@ -82,3 +82,24 @@ Treated as approved product requirements and woven into the existing architectur
 
 ## Next tasks
 - Optional P2 polish only; core flagship scope complete and tested.
+
+## Launch-readiness bundle (2026-06, session 4)
+- Profile photo upload FIXED: client now normalizes (resize≤1024 + JPEG compress via
+  expo-image-manipulator) and sends an explicit-mime file; robust web+native FormData; Retry on
+  failure; permission/cancel/offline handled. Photo persists and shows on profile, connections,
+  conversation header, QR identity preview, scanner.
+- Profile/Settings IA: Profile = Edit profile, My connection QR, (Drafts if TRK), Identity, Settings.
+  All configuration (Account/Identity/Privacy/Safety/Communication/Notifications/Institutions/About)
+  lives once, in Settings. No duplicate routes.
+- Safety screen: 'Who can reach you' (Privacy + Call availability links), Blocked people (list/empty +
+  unblock), Reporting info. Separate from About.
+- About Traksha: three-layer progressive disclosure (Everyone / Curious / Technical). Technical layer
+  is conceptual only — no secrets/keys/credentials.
+- Chat attachments ADDED (uses existing Object Storage): "+" composer button → Camera/Photos/Document
+  sheet → preview → send. Backend POST /conversations/{id}/attachments (image+doc), authorized serve
+  GET /messages/{id}/attachment (members 200, outsider 403, no-auth 401), 415 unsupported, 413 >20MB.
+  Image thumbnails + full viewer; document cards with open/download; uploading/sent/failed·retry
+  states; respects personal/professional/hybrid context. Conversation list shows 📷/📄 labels.
+- LOCKED (not implemented, per instruction): future QR deep-link install flow; no hardcoded deep links.
+- Tests: backend 20/20 attachment + regression green (test_attachments.py); frontend flows verified
+  (iteration_3.json).

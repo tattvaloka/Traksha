@@ -9,6 +9,7 @@ import { useMutation } from "@tanstack/react-query";
 import { StackHeader } from "@/src/components/Header";
 import { Button, Input, T, Avatar } from "@/src/components/ui";
 import { api, ApiError, uploadProfilePhoto } from "@/src/api/client";
+import { normalizeImage } from "@/src/utils/image";
 import { queryClient } from "@/src/query-client";
 import { useAuth, Me } from "@/src/auth/AuthContext";
 import { useToast } from "@/src/components/Toast";
@@ -24,6 +25,24 @@ export default function EditProfile() {
   const [jobTitle, setJobTitle] = useState(user?.job_title ?? "");
   const [organization, setOrganization] = useState(user?.organization ?? "");
   const [uploading, setUploading] = useState(false);
+  const [failedUri, setFailedUri] = useState<string | null>(null);
+
+  const doUpload = async (asset: { uri: string; width?: number }) => {
+    setUploading(true);
+    setFailedUri(null);
+    try {
+      const norm = await normalizeImage(asset.uri, { maxSize: 1024, compress: 0.85, sourceWidth: asset.width });
+      const me = await uploadProfilePhoto({ uri: norm.uri, mimeType: norm.mimeType, fileName: "avatar.jpg" });
+      setUser(me);
+      queryClient.invalidateQueries();
+      show("Photo updated", "success");
+    } catch (e) {
+      setFailedUri(asset.uri);
+      show(e instanceof ApiError ? e.message : "Could not upload photo. Tap Retry.", "error");
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const pickPhoto = async () => {
     const perm = await ImagePicker.getMediaLibraryPermissionsAsync();
@@ -43,20 +62,10 @@ export default function EditProfile() {
       mediaTypes: ["images"],
       allowsEditing: true,
       aspect: [1, 1],
-      quality: 0.7,
+      quality: 1,
     });
     if (result.canceled || !result.assets?.[0]) return;
-    setUploading(true);
-    try {
-      const me = await uploadProfilePhoto(result.assets[0]);
-      setUser(me);
-      queryClient.invalidateQueries();
-      show("Photo updated", "success");
-    } catch (e) {
-      show(e instanceof ApiError ? e.message : "Could not upload photo.", "error");
-    } finally {
-      setUploading(false);
-    }
+    await doUpload(result.assets[0]);
   };
 
   const save = useMutation({
@@ -88,6 +97,9 @@ export default function EditProfile() {
             </View>
           </Pressable>
           <T variant="caption" color={colors.muted}>{uploading ? "Uploading…" : "Tap to change photo"}</T>
+          {failedUri && !uploading ? (
+            <Button label="Retry upload" icon="refresh" variant="secondary" full={false} onPress={() => doUpload({ uri: failedUri })} testID="retry-photo" />
+          ) : null}
         </View>
         <Input label="DISPLAY NAME" value={displayName} onChangeText={setDisplayName} testID="edit-name" autoCapitalize="words" />
         <View style={{ gap: 6 }}>

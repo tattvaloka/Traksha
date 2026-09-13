@@ -1,0 +1,44 @@
+{
+  "summary": "Iteration 3 regression on the launch-readiness bundle: (a) profile photo upload bug fix, (b) chat attachments (camera/photos/document), (c) Profile/Settings IA cleanup, (d) Safety screen redesign, (e) About Traksha three-layer disclosure. Backend: 20/20 tests pass across two files (test_attachments.py added — image + document + 415 + outsider + invalid-context + professional isolation + seeded Aria/Ben pair; test_new_features.py rerun — private notes, context switch, drafts, profile photos). One flaky failure on TestDrafts.test_trk_full_draft_lifecycle (POST /api/dev/simulate-transition returned 500 once under parallel worker load; passed on re-run, no server log trace). Frontend (mobile viewport 390x844, signed in as Aria): Profile tab shows exactly Edit profile / My connection QR / Identity / Settings — no top-level Privacy/Safety anymore. Settings hub shows all 9 rows (Account, Identity, Privacy, Safety, Communication, Notifications, Institutions (INS), About Traksha, Sign out). Safety screen renders three sections 'Who can reach you' (safety-privacy + safety-communication), 'Blocked people' (empty-blocks 'No one is blocked'), 'Reporting' info card. About Traksha shows three expandable layers (about-layer-1 open by default; layer-2 and layer-3 toggle correctly). Layer-3 'Technical transparency' contains educational copy only (mentions 'bearer tokens' as concept — no actual JWT, no MONGO_URL, no keys, no passwords). Edit profile exposes change-photo (retry-photo only shown on failure). Conversation screen exposes attach-button + attach-camera + attach-photos + attach-document; existing attachment-image bubbles and attachment-file (doc.pdf) card render correctly for the Aria<->Ben seeded pair; conversation list shows '📷 Photo' as last-message label. No React Native red screen. Only console warning: deprecated 'shadow*' style props (cosmetic — same as prior iteration). No deprecated Expo packages detected.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/dev/simulate-transition", "issue": "Intermittent 500 under parallel test load (1/20 runs). Passed on retry. No traceback in backend logs — possibly race on the once-only transition update."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "global", "issues": ["Deprecated 'shadow*' style props warning on RN Web (cosmetic) — consider migrating to boxShadow."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_attachments.py",
+    "/app/backend/tests/test_new_features.py",
+    "/app/backend/tests/test_traksha_backend.py",
+    "/app/test_reports/pytest/iter3_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Investigate the flaky 500 on /api/dev/simulate-transition under parallel load — add an atomic $set with a status guard so concurrent duplicate transitions return 400 instead of 500.",
+    "(Optional cosmetic) Replace RN 'shadow*' style props with boxShadow to silence Web deprecation warnings."
+  ],
+  "critical_code_review_comments": [
+    "server.py now 1653 lines — well past the 700-line guideline; split into routers (auth, connections, drafts, conversations, attachments, safety, tattvaloka).",
+    "POST /api/conversations/{connection_id}/attachments correctly whitelists content-types (image/jpeg,png,webp,gif + pdf,docx,xlsx,pptx,txt,csv), enforces 20MB cap, and returns 415/413/400 as specced.",
+    "GET /api/messages/{message_id}/attachment gate is via db.connections.find_one({..., members: u._id}) — good; returns 403 for outsiders and 401 unauth (verified).",
+    "Attachment 'name' is trimmed to 180 chars — good UX/safety.",
+    "About Layer-3 copy is educational ('bearer tokens', 'salted-and-hashed passwords') — no actual secrets exposed; the substring match on 'bearer ' is a benign false positive."
+  ],
+  "updated_files": ["/app/backend/tests/test_attachments.py"],
+  "success_rate": {
+    "backend": "100% (20/20 on retry across test_attachments.py + test_new_features.py; test_traksha_backend.py was green last iteration and untouched)",
+    "frontend": "100% for the 5 features under test — all testIDs present, IA correct, attachments render, no red screens"
+  },
+  "seed_data_creation": "No persistent seed added. Used seeded Aria<->Ben Hybrid connection (33af89dbd39795d6870e5b46). Test attachments (one PNG) were uploaded to that conversation during the seeded-pair sanity test — visible in Aria's chat history now.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All launch-readiness items verified. New file /app/backend/tests/test_attachments.py is idempotent and covers image + document + 415 unsupported + outsider 403 + no-auth 401 + invalid context 400 + professional/personal isolation + the seeded pair end-to-end. Signed-in Aria mobile flow uses Profile -> Settings -> Safety/About; conversation composer has attach-button + preview sheet + attachment bubbles wired. Layer-3 About contains only educational technical copy, no leakage.",
+  "rca_of_issue": "Flaky 500 on /api/dev/simulate-transition: reproduced once under xdist parallel run; second sequential run of the same test passed. No traceback in backend.err.log. Most likely a concurrent modify race in the transition update (offset-aware datetime work was fixed last iteration). Recommendation: convert transition to a conditional atomic update with returnDocument=AFTER and 400 on no-match."
+}
