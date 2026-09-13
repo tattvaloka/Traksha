@@ -56,10 +56,29 @@ every sensitive action; private data never exposed publicly.
   about; INS "Coming soon".
 
 ## Backlog / next (P1/P2)
-- P1: unread message deep-link polish; connection context switcher inside chat.
-- P1: object-storage-backed profile photo upload (currently URL only).
 - P2: native WebRTC media for real audio/video (requires dev build).
 - P2: notification preferences screen; accessibility/appearance settings depth.
+- P2 polish: swap deprecated RN-web `shadow*` props for `boxShadow`.
+
+## Flagship four capabilities — fully integrated (2026-06, session 2)
+Treated as approved product requirements and woven into the existing architecture:
+- Profile Photos: object-storage upload (edit-profile), shown on own profile, public
+  profile, connections list, messages list, conversation header (avatar in StackHeader),
+  scanner preview, and the QR identity preview card. Initials fallback when absent.
+- Chat Context Switch: relationship context is changeable from the connected profile's
+  "Manage connection" sheet (personal / professional / both). Hybrid produces two
+  conversations and an in-chat context switcher; single context shows a ContextChip.
+  No duplicate identities.
+- Contribution Drafts: TRK save/edit/return/publish/delete lifecycle (create.tsx + drafts.tsx);
+  TMP blocked with a clear message.
+- Private Connection Notes: per-viewer private note (PUT /connections/{id}/note), edited in
+  the Manage sheet, previewed on profile ("PRIVATE NOTE · ONLY YOU") and on the connections
+  list. Server-verified to never expose the note to the other member. Deleted with the connection.
+
+## Env restore note (session 2)
+- `/app/backend/.env` and `/app/frontend/.env` were missing in the fresh container and were
+  restored (MONGO_URL, DB_NAME, JWT_SECRET, EMERGENT_LLM_KEY, INTEGRATION_PROXY_URL; and
+  EXPO_PUBLIC_BACKEND_URL + packager vars). Backend healthy; 36/36 backend tests pass.
 
 ## Next tasks
-- Run testing agent (backend + frontend), fix any blocking issues.
+- Optional P2 polish only; core flagship scope complete and tested.

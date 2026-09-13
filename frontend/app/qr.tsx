@@ -5,15 +5,17 @@ import { router } from "expo-router";
 import QRCode from "react-native-qrcode-svg";
 import { useMutation } from "@tanstack/react-query";
 import { StackHeader } from "@/src/components/Header";
-import { T, Card, Button, Loader } from "@/src/components/ui";
+import { T, Card, Button, Loader, Avatar, IdentityBadge } from "@/src/components/ui";
 import { LogoMark } from "@/src/components/Logo";
 import { api } from "@/src/api/client";
+import { useAuth } from "@/src/auth/AuthContext";
 import { useToast } from "@/src/components/Toast";
 import { useTheme, fonts, space } from "@/src/theme";
 
 export default function QRScreen() {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
+  const { user } = useAuth();
   const { show } = useToast();
   const [session, setSession] = useState<{ token: string; expires_at: string } | null>(null);
   const [remaining, setRemaining] = useState(0);
@@ -48,6 +50,16 @@ export default function QRScreen() {
     <View style={{ flex: 1, backgroundColor: colors.surface }}>
       <StackHeader title="Connection QR" />
       <ScrollView contentContainerStyle={{ padding: 16, gap: space.md, paddingBottom: insets.bottom + 24 }}>
+        {user ? (
+          <Card testID="qr-identity-preview" style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+            <Avatar name={user.display_name} uri={user.photo_url} size={52} />
+            <View style={{ flex: 1, gap: 6 }}>
+              <T variant="subtitle" numberOfLines={1}>{user.display_name}</T>
+              <IdentityBadge type={user.identity_type} code={user.identity_code} />
+            </View>
+          </Card>
+        ) : null}
+
         <Card style={{ alignItems: "center", gap: 16, paddingVertical: 28 }}>
           {create.isPending && !session ? (
             <Loader />

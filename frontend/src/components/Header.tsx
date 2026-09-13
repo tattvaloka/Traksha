@@ -107,10 +107,12 @@ export function StackHeader({
   title,
   right,
   onBack,
+  avatar,
 }: {
   title?: string;
   right?: React.ReactNode;
   onBack?: () => void;
+  avatar?: React.ReactNode;
 }) {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
@@ -128,6 +130,7 @@ export function StackHeader({
       }}
     >
       <IconButton icon="chevron-back" onPress={onBack || (() => router.back())} testID="back-button" />
+      {avatar ? <View style={{ marginRight: 8 }}>{avatar}</View> : null}
       <Text
         numberOfLines={1}
         style={{
@@ -135,7 +138,7 @@ export function StackHeader({
           fontFamily: fonts.serif,
           fontSize: 19,
           color: colors.textPrimary,
-          marginLeft: 2,
+          marginLeft: avatar ? 0 : 2,
         }}
       >
         {title}

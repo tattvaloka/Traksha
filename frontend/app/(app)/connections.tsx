@@ -114,6 +114,13 @@ export default function Connections() {
                   {tab === "connections" && <ContextChip context={item.context} />}
                 </Pressable>
 
+                {tab === "connections" && item.note ? (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                    <Ionicons name="lock-closed-outline" size={12} color={colors.muted} />
+                    <T variant="caption" color={colors.textSecondary} numberOfLines={1} style={{ flex: 1 }}>{item.note}</T>
+                  </View>
+                ) : null}
+
                 {tab === "incoming" && (
                   <View style={{ flexDirection: "row", gap: 10 }}>
                     <View style={{ flex: 1 }}><Button label="Decline" variant="secondary" onPress={() => decline.mutate(item.id)} testID={`decline-${item.id}`} /></View>

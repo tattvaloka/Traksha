@@ -6,7 +6,7 @@ import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@react-native-vector-icons/ionicons";
 import { StackHeader, IconButton } from "@/src/components/Header";
-import { T, Loader, ErrorView, EmptyState, ContextChip } from "@/src/components/ui";
+import { T, Loader, ErrorView, EmptyState, ContextChip, Avatar } from "@/src/components/ui";
 import { Sheet } from "@/src/components/Sheet";
 import { Button } from "@/src/components/ui";
 import { api, ApiError } from "@/src/api/client";
@@ -98,6 +98,7 @@ export default function Conversation() {
     <View style={{ flex: 1, backgroundColor: colors.surface }}>
       <StackHeader
         title={other?.display_name || "Conversation"}
+        avatar={other ? <Avatar name={other.display_name} uri={other.photo_url} size={30} /> : undefined}
         right={<IconButton icon="call-outline" onPress={() => setCallSheet(true)} testID="conv-call" />}
       />
       <View style={{ paddingHorizontal: 16, paddingVertical: 8, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: colors.border, gap: 8 }}>

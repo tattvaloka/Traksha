@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { View, ScrollView, Pressable } from "react-native";
+import React, { useEffect, useState } from "react";
+import { View, ScrollView, Pressable, TextInput } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, router } from "expo-router";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -42,6 +42,35 @@ export default function PublicProfile() {
     mutationFn: () => api.post("/blocks", { identity_code: code }),
     onSuccess: () => { setMoreSheet(false); show("Blocked", "info"); queryClient.invalidateQueries(); router.back(); },
   });
+  const changeContext = useMutation({
+    mutationFn: ({ connId, context }: { connId: string; context: string }) => api.put(`/connections/${connId}/context`, { context }),
+    onSuccess: () => {
+      show("Relationship context updated", "success");
+      queryClient.invalidateQueries({ queryKey: ["profile", code] });
+      queryClient.invalidateQueries({ queryKey: ["connections"] });
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+    },
+    onError: (e) => show(e instanceof ApiError ? e.message : "Could not update context.", "error"),
+  });
+  const saveNote = useMutation({
+    mutationFn: ({ connId, note }: { connId: string; note: string }) => api.put(`/connections/${connId}/note`, { note }),
+    onSuccess: () => {
+      setManageSheet(false);
+      show("Private note saved", "success");
+      queryClient.invalidateQueries({ queryKey: ["profile", code] });
+      queryClient.invalidateQueries({ queryKey: ["connections"] });
+    },
+    onError: (e) => show(e instanceof ApiError ? e.message : "Could not save note.", "error"),
+  });
+  const removeConn = useMutation({
+    mutationFn: (connId: string) => api.del(`/connections/${connId}`),
+    onSuccess: () => { setManageSheet(false); show("Connection removed", "info"); queryClient.invalidateQueries(); router.back(); },
+  });
+
+  useEffect(() => {
+    const n = profile.data?.relationship?.note;
+    if (typeof n === "string") setNoteText(n);
+  }, [profile.data]);
 
   if (profile.isLoading) return <View style={{ flex: 1, backgroundColor: colors.surface }}><StackHeader title="Profile" /><Loader /></View>;
   if (profile.isError) return <View style={{ flex: 1, backgroundColor: colors.surface }}><StackHeader title="Profile" /><ErrorView message={(profile.error as ApiError)?.message} onRetry={profile.refetch} /></View>;
@@ -94,6 +123,16 @@ export default function PublicProfile() {
               <View style={{ flex: 1 }}><Button label="Message" icon="chatbubble-outline" onPress={() => router.push(`/conversation/${p.relationship.connection_id}/${p.relationship.context === "professional" ? "professional" : "personal"}`)} testID="message-button" /></View>
               <View style={{ flex: 1 }}><Button label="Call" icon="call-outline" variant="secondary" onPress={() => setCallSheet(true)} testID="call-button" /></View>
             </View>
+            <Button label="Manage connection" icon="options-outline" variant="secondary" onPress={() => setManageSheet(true)} testID="manage-connection" />
+            {p.relationship.note ? (
+              <Card testID="private-note-preview" style={{ backgroundColor: colors.surfaceWarm, gap: 6 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <Ionicons name="lock-closed-outline" size={13} color={colors.textSecondary} />
+                  <T variant="mono" color={colors.textSecondary}>PRIVATE NOTE · ONLY YOU</T>
+                </View>
+                <T variant="bodySm" color={colors.textPrimary}>{p.relationship.note}</T>
+              </Card>
+            ) : null}
           </View>
         ) : rel === "outgoing" ? (
           <Button label="Withdraw request" variant="secondary" onPress={() => withdraw.mutate(p.relationship.request_id)} testID="withdraw-button" />
@@ -132,6 +171,56 @@ export default function PublicProfile() {
         <Button label="Report" icon="flag-outline" variant="secondary" onPress={() => { setMoreSheet(false); router.push(`/report?target_type=profile&target_id=${code}`); }} testID="report-profile" />
         <Button label="Block" icon="ban-outline" variant="destructive" onPress={() => block.mutate()} testID="block-profile" />
         <T variant="caption" color={colors.textSecondary}>Blocking removes any connection and prevents future requests, messages and calls between you.</T>
+      </Sheet>
+
+      {/* Manage connection sheet: context + private note + remove */}
+      <Sheet visible={manageSheet} onClose={() => setManageSheet(false)} title="Manage connection">
+        {rel === "connected" && (
+          <>
+            <T variant="mono" color={colors.textSecondary}>RELATIONSHIP CONTEXT</T>
+            <T variant="bodySm" color={colors.textSecondary}>Hybrid keeps separate personal and professional chats with the same person — no duplicate identities.</T>
+            <View style={{ gap: 8 }}>
+              {(["personal", "professional", "both"] as const).map((ctx) => {
+                const sel = p.relationship.context === ctx;
+                return (
+                  <Pressable
+                    key={ctx}
+                    testID={`manage-context-${ctx}`}
+                    onPress={() => changeContext.mutate({ connId: p.relationship.connection_id, context: ctx })}
+                    style={({ pressed }) => ({ padding: 14, borderRadius: radius.md, borderWidth: 1, borderColor: sel ? colors.brandPrimary : colors.border, backgroundColor: pressed ? colors.surfaceTertiary : colors.surfaceSecondary, flexDirection: "row", alignItems: "center", justifyContent: "space-between" })}
+                  >
+                    <T variant="label">{ctx === "both" ? "Personal + Professional (Hybrid)" : ctx === "personal" ? "Personal" : "Professional"}</T>
+                    <Ionicons name={sel ? "checkmark-circle" : "ellipse-outline"} size={20} color={sel ? colors.brandPrimary : colors.muted} />
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <Divider />
+
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Ionicons name="lock-closed-outline" size={14} color={colors.textSecondary} />
+              <T variant="mono" color={colors.textSecondary}>PRIVATE NOTE</T>
+            </View>
+            <T variant="caption" color={colors.muted}>Only you can see this. It is never shown to {p.display_name} and is not a public feature.</T>
+            <TextInput
+              testID="note-input"
+              value={noteText}
+              onChangeText={setNoteText}
+              multiline
+              maxLength={1000}
+              placeholder={`How you know ${p.display_name}, context, reminders…`}
+              placeholderTextColor={colors.muted}
+              style={{ minHeight: 96, textAlignVertical: "top", borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, padding: 14, fontFamily: fonts.sans, fontSize: 15, color: colors.textPrimary, backgroundColor: colors.surfaceSecondary }}
+            />
+            <Button label="Save note" onPress={() => saveNote.mutate({ connId: p.relationship.connection_id, note: noteText.trim() })} loading={saveNote.isPending} testID="save-note" />
+
+            <Divider />
+
+            <Button label="Remove connection" icon="person-remove-outline" variant="destructive" onPress={() => removeConn.mutate(p.relationship.connection_id)} loading={removeConn.isPending} testID="remove-connection" />
+            <T variant="caption" color={colors.textSecondary}>Removing ends messaging and calling. Your private note is deleted with the connection.</T>
+          </>
+        )}
       </Sheet>
     </View>
   );
