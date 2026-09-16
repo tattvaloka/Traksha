@@ -1,6 +1,6 @@
 import React, { useEffect } from "react";
-import { View, ActivityIndicator, LogBox } from "react-native";
-import { Stack, useRouter, useSegments } from "expo-router";
+import { View, ActivityIndicator, LogBox, Platform } from "react-native";
+import { Stack, useRouter, useSegments, useRootNavigationState } from "expo-router";
 import { useFonts } from "expo-font";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -30,9 +30,11 @@ function RootNavigator() {
   const { ready, user } = useAuth();
   const segments = useSegments();
   const router = useRouter();
+  const rootNavigationState = useRootNavigationState();
+  const isNavigationReady = rootNavigationState?.key != null;
 
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || !isNavigationReady) return;
     const inApp = segments[0] === "(app)";
     const inAuth = segments[0] === "(auth)";
     if (!user && (inApp || segments.length === 0)) {
@@ -40,13 +42,13 @@ function RootNavigator() {
     } else if (user && (inAuth || segments.length === 0)) {
       router.replace("/(app)");
     }
-  }, [ready, user, segments, router]);
+  }, [ready, isNavigationReady, user, segments, router]);
 
   if (!ready) return <Splash />;
 
   return (
     <>
-      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: themes.light.surface } }}>
+      <Stack screenOptions={{ headerShown: false, animation: Platform.OS === "web" ? "none" : "default", contentStyle: { backgroundColor: themes.light.surface } }}>
         <Stack.Screen name="call" options={{ presentation: "fullScreenModal", animation: "fade" }} />
       </Stack>
       <IncomingCallOverlay />
