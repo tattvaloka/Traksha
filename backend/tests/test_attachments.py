@@ -13,7 +13,7 @@ import requests
 
 BASE_URL = os.environ.get(
     "EXPO_PUBLIC_BACKEND_URL",
-    "https://c1512e0d-3b32-4c4b-9e67-36adbf517710.preview.emergentagent.com",
+    "https://git-fetch-22.preview.emergentagent.com",
 ).rstrip("/")
 API = f"{BASE_URL}/api"
 
