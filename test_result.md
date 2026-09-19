@@ -102,16 +102,27 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 ## user_problem_statement: >
-  Restructure Profile → Preferences → Identity architecture (Traksha).
-  Profile = Edit Profile, My Connection QR, About Traksha, Preferences (no standalone Identity).
-  Preferences = Account, Identity, Privacy, Safety, Communication, Contact Us, Sign Out.
-  Identity screen must show visually distinct TMP (provisional) vs TRK (established) states,
-  lifecycle/history, "Register an Institution (INS)" (begins verification flow, not instant),
-  and Developer Tool (Simulate transition) at the bottom. Notifications must NOT be in Preferences.
-  Also restored missing .env and fixed web render/robustness (nav-ready guard, non-blocking fonts,
-  bootstrap timeout, asyncRoutes:false, expo SDK 57 version alignment).
+  CORS fix verification for authentication "offline" bug. User reported login/signup fails with 
+  "You appear to be offline" on real mobile browser. Root cause: CORS misconfiguration where 
+  actual responses returned Access-Control-Allow-Origin: * together with 
+  Access-Control-Allow-Credentials: true (forbidden by browsers). Fixed by setting 
+  allow_credentials=False in CORSMiddleware.
 
 ## backend:
+##   - task: "CORS fix verification - eliminate forbidden Access-Control-Allow-Origin: * + Access-Control-Allow-Credentials: true combination"
+##     implemented: true
+##     working: true
+##     file: "backend/server.py"
+##     stuck_count: 0
+##     priority: "high"
+##     needs_retesting: false
+##     status_history:
+##         -working: "NA"
+##         -agent: "main"
+##         -comment: "Changed CORSMiddleware configuration in server.py line 316-322: set allow_credentials=False to eliminate the forbidden CORS combination that was causing 'You appear to be offline' errors on mobile browsers."
+##         -working: true
+##         -agent: "testing"
+##         -comment: "✅ CORS FIX VERIFIED - ALL 6 TESTS PASSED. Tested against public URL https://e5ed1e9a-897f-4712-aed1-a733a0985574.preview.emergentagent.com/api with cross-origin requests from https://app.emergent.sh. (1) POST /api/auth/register: Returns 200 with Access-Control-Allow-Origin: * and NO Access-Control-Allow-Credentials header (forbidden combination eliminated). (2) POST /api/auth/login: Returns 200 with valid access_token and correct CORS headers (no credentials header). (3) POST /api/auth/login with WRONG password: Returns 401 with correct CORS headers (error path also fixed). (4) OPTIONS /api/auth/login preflight: Returns 200 with Access-Control-Allow-Origin: *, access-control-allow-methods, access-control-allow-headers, access-control-max-age, and NO credentials header. (5) GET /api/auth/me with Bearer token: Returns 200 with user data and correct CORS headers. (6) GET /api/ins/permissions/catalog with Bearer token: Returns 200 with permissions catalog and correct CORS headers. CONFIRMED: The forbidden combination of Access-Control-Allow-Origin: * + Access-Control-Allow-Credentials: true has been completely eliminated from all tested endpoints (success paths, error paths, and preflight requests). Auth flows work correctly cross-origin. INS endpoints accessible with proper authentication."
 ##   - task: "INS Phase A: registration, verification/approval, ownership, profile, members, custom roles, permissions, scope, role assignment approval, authorization enforcement"
 ##     implemented: true
 ##     working: true
@@ -182,7 +193,7 @@
 
 ## test_plan:
 ##   current_focus:
-##     - "INS Phase A: registration, verification/approval, ownership, profile, members, custom roles, permissions, scope, role assignment approval, authorization enforcement"
+##     - "CORS fix verification - eliminate forbidden Access-Control-Allow-Origin: * + Access-Control-Allow-Credentials: true combination"
 ##   test_all: false
 ##   test_priority: "high_first"
 
@@ -220,3 +231,29 @@
 ##        remain functional (register, login, /auth/me, /identity/me, simulate-transition, search). Backend correctly enforces
 ##        Institution->Role->Permission->Scope->Approval->Person hierarchy. Role != Permission != Ownership verified.
 ##        Backend enforces authorization (not relying on frontend). No issues found.
+##     -agent: "testing"
+##     -message: >
+##        INS Phase A FRONTEND TESTING COMPLETED ✅. Tested comprehensive flow on web preview (mobile viewport 390x844):
+##        ✓ PASS (1) Empty state renders correctly. ✓ PASS (2) Registration screen loads with form fields (name, email, role) and submit button.
+##        ✓ PASS (3) After submit, navigates to institution detail showing "Awaiting verification" banner. Pending status pill visible in list.
+##        ✓ PASS (4) Admin console accessible via shield icon, grant-admin works, pending application appears, approve button works.
+##        ✓ PASS (5) After approval, "Awaiting verification" banner removed, management options (Edit profile, People, Roles, Approvals) appear.
+##        ✓ PASS (6) Profile editing works - description field accepts input and persists after save. ✓ PASS (7) People screen shows owner with "Owner" badge.
+##        Invalid identity code shows error toast (expected behavior). ✓ PASS (8-9) Role creation works - name field, scope selection (department),
+##        scope label field appears, permissions toggleable (members:view, members:invite), role saves and appears in list with scope shown.
+##        ✓ PASS (10) Authorization controls visible for owner (Edit profile, People, Roles, Approvals nav, "You are the owner" indicator).
+##        ✓ PASS (11) Personal identity unaffected - TMP provisional identity card renders, TMP code visible, bottom tabs work (Loka, Profile navigation).
+##        ✓ PASS (12) Data persists after page reload - institution still visible in list. Navigation/back buttons work, forms accept input, loading states work.
+##        ⚠ LIMITATION: Member addition and role assignment/approval flows not fully tested due to logout/re-register timing issues in automated test.
+##        Backend has been comprehensively tested for these flows (all 13 scenarios passed). No blank screens, no console errors blocking functionality.
+##        Mobile layout renders correctly. INS Phase A is READY for final manual verification of member/role assignment flows and GitHub push.
+##     -agent: "testing"
+##     -message: >
+##        CORS FIX VERIFICATION COMPLETE ✅ - Tested authentication endpoints against public URL with cross-origin requests.
+##        ALL 6 SCENARIOS PASSED: (1) Register returns 200 with correct CORS headers, (2) Login returns 200 with valid token and correct CORS headers,
+##        (3) Login with wrong password returns 401 with correct CORS headers (error path fixed), (4) OPTIONS preflight returns 200 with correct CORS headers,
+##        (5) GET /auth/me returns 200 with correct CORS headers, (6) GET /ins/permissions/catalog returns 200 with correct CORS headers.
+##        CONFIRMED: The forbidden combination of Access-Control-Allow-Origin: * + Access-Control-Allow-Credentials: true has been ELIMINATED.
+##        All responses now return Access-Control-Allow-Origin: * WITHOUT the Access-Control-Allow-Credentials header.
+##        This fixes the "You appear to be offline" error that was occurring on mobile browsers due to CORS policy violation.
+##        Auth flows (register, login, authenticated requests) work correctly cross-origin. No issues found.
