@@ -109,6 +109,20 @@
   allow_credentials=False in CORSMiddleware.
 
 ## backend:
+##   - task: "INS Phase B.1: departments/teams, projects, real scoped authorization"
+##     implemented: true
+##     working: true
+##     file: "backend/server.py"
+##     stuck_count: 0
+##     priority: "high"
+##     needs_retesting: false
+##     status_history:
+##         -working: "NA"
+##         -agent: "main"
+##         -comment: "Added collections ins_departments, ins_projects. New permissions: departments:view/manage, projects:view/manage. Extended resolve_authority to build scope-aware grants; new require_scoped_perm + scope_covers enforce scope against real resources (institution/department/project). Role assignment now accepts optional scope override (validated ref). Endpoints: GET/POST /ins/{id}/departments, GET/PUT/POST-archive /ins/{id}/departments/{dept}, POST/DELETE dept members; GET/POST /ins/{id}/projects, GET/PUT/POST-archive /ins/{id}/projects/{proj}, POST/DELETE project assignees. Curl smoke passed: dept-scoped user can view/edit/create projects in Dept A (200) but not Dept B (403), cannot create departments (403, needs institution scope); dept detail scoped; owner unrestricted; Phase A intact. Needs formal retest."
+##         -working: true
+##         -agent: "testing"
+##         -comment: "✅ ALL 47 TESTS PASSED - INS Phase B.1 backend FULLY WORKING. Comprehensive testing completed with 3 users (owner, memberA, memberB). (1) DEPARTMENT CREATION: Created Dept A, Dept B (kind=department), Team X (kind=team) - all 200. Invalid kind (foo) correctly returns 400. GET departments lists all (200). (2) DEPARTMENT MEMBERSHIP: Added memberA to Dept A (200, member appears in list). Adding non-INS-member correctly returns 404. Remove member works (200). Re-added memberA for later tests. (3) PROJECT CREATION: Created Proj A in Dept A, Proj B in Dept B, floating project with no department - all 200. Invalid status (bogus) returns 400. Non-existent department_id returns 400. GET projects lists all with department_name and assignees fields (200). (4) PROJECT ASSIGNMENT: Assigned memberA to Proj A (200, assignee appears). Assigning non-INS-member returns 404. Delete assignee works (200). (5) SCOPED AUTHORIZATION - THE CORE: Created role with projects:manage/view + departments:view permissions. Assigned to memberA SCOPED to Dept A (approval workflow works). MemberA with dept-scoped role: ✅ GET Proj A (in Dept A) = 200 ALLOWED, ✅ GET Proj B (in Dept B) = 403 UNAUTHORIZED (correctly rejected), ✅ PUT Proj A = 200 ALLOWED, ✅ PUT Proj B = 403 UNAUTHORIZED (correctly rejected), ✅ POST project in Dept A = 200 ALLOWED, ✅ POST project in Dept B = 403 UNAUTHORIZED (correctly rejected), ✅ POST department = 403 UNAUTHORIZED (needs institution scope, correctly rejected), ✅ GET Dept A = 200 ALLOWED, ✅ GET Dept B = 403 UNAUTHORIZED (correctly rejected). (6) PROJECT-SCOPED ROLE: Assigned role to memberB scoped to SPECIFIC project (Proj A). MemberB: ✅ GET/PUT Proj A = 200 ALLOWED, ✅ GET/PUT Proj B = 403 UNAUTHORIZED (correctly rejected), ✅ POST new project = 403 UNAUTHORIZED (project scope cannot create, correctly rejected). (7) PERSISTENCE: Re-fetched departments and projects - all data persists with correct fields (names, department_name, members, assignees, status). (8) PHASE A REGRESSION: Owner (institution scope) can GET Proj B (200), GET Dept B (200), create departments (200). Member with NO roles: POST projects = 403, POST departments = 403, GET departments list = 200 (allowed), GET projects list = 200 (allowed). Role assignment approval workflow functions correctly. CONFIRMED: Backend correctly enforces REAL scoped authorization - out-of-scope department and project access is REJECTED by the backend (403), not just hidden. All endpoints return correct HTTP codes. No issues found."
 ##   - task: "CORS fix verification - eliminate forbidden Access-Control-Allow-Origin: * + Access-Control-Allow-Credentials: true combination"
 ##     implemented: true
 ##     working: true
@@ -257,3 +271,16 @@
 ##        All responses now return Access-Control-Allow-Origin: * WITHOUT the Access-Control-Allow-Credentials header.
 ##        This fixes the "You appear to be offline" error that was occurring on mobile browsers due to CORS policy violation.
 ##        Auth flows (register, login, authenticated requests) work correctly cross-origin. No issues found.
+##     -agent: "testing"
+##     -message: >
+##        INS PHASE B.1 BACKEND TESTING COMPLETE ✅ - ALL 47 TESTS PASSED. Tested comprehensive flow with 3 users (owner + 2 members).
+##        Departments/teams creation works (kind validation enforced). Department membership works (add/remove, non-member validation).
+##        Projects creation works (department association, status validation, floating projects). Project assignment works (add/remove assignees).
+##        SCOPED AUTHORIZATION (THE CORE FEATURE) FULLY WORKING: Department-scoped role correctly allows access to projects/departments
+##        within scope (Dept A) and REJECTS access to out-of-scope resources (Dept B) with 403. Project-scoped role correctly allows
+##        access to specific project only and rejects all other projects with 403. Creating departments requires institution scope
+##        (dept-scoped role correctly rejected with 403). Creating projects within scope works, out-of-scope creation rejected with 403.
+##        Project-scoped role cannot create new projects (correctly rejected with 403). Persistence verified - all data persists with
+##        correct fields. Phase A regression passed - owner has full access, members without roles get 403 on protected actions but
+##        200 on list endpoints. Backend correctly enforces REAL scoped authorization at the API level (not just UI hiding).
+##        All HTTP codes correct. No issues found. READY FOR PRODUCTION.

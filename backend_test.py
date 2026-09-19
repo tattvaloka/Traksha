@@ -1,879 +1,730 @@
 #!/usr/bin/env python3
 """
-INS Phase A Backend Test Suite
-Tests the full Institution registration, verification, ownership, roles, permissions, and authorization flow.
+INS Phase B.1 Backend Test Suite
+Tests departments/teams, projects, and REAL scoped authorization
 """
-
 import requests
 import json
-import sys
-import time
-from typing import Dict, Optional
+from typing import Dict, Any
 
-# Backend URL from environment
-BASE_URL = "https://e5ed1e9a-897f-4712-aed1-a733a0985574.preview.emergentagent.com/api"
+BASE_URL = "http://localhost:8001/api"
 
-# Test state
-owner_token = None
-owner_user = None
-member_token = None
-member_user = None
-ins_id = None
-role_id = None
-member_id = None
-assignment_id = None
-approval_id = None
-
-# Test results
-results = []
-
-
-def log_test(scenario: str, passed: bool, expected: str, actual: str, details: str = ""):
-    """Log test result"""
-    status = "✅ PASS" if passed else "❌ FAIL"
-    results.append({
-        "scenario": scenario,
-        "passed": passed,
-        "expected": expected,
-        "actual": actual,
-        "details": details
-    })
-    print(f"{status} - Scenario {scenario}")
-    if not passed:
-        print(f"  Expected: {expected}")
-        print(f"  Actual: {actual}")
+class TestRunner:
+    def __init__(self):
+        self.owner_token = None
+        self.owner_user_id = None
+        self.owner_identity_code = None
+        self.memberA_token = None
+        self.memberA_user_id = None
+        self.memberA_identity_code = None
+        self.memberA_member_id = None
+        self.memberB_token = None
+        self.memberB_user_id = None
+        self.memberB_identity_code = None
+        self.memberB_member_id = None
+        self.ins_id = None
+        self.deptA_id = None
+        self.deptB_id = None
+        self.teamX_id = None
+        self.projA_id = None
+        self.projB_id = None
+        self.floating_proj_id = None
+        self.role_id = None
+        self.approval_id = None
+        self.role_id_proj_scoped = None
+        self.approval_id_proj_scoped = None
+        self.results = []
+        
+    def log(self, test_num: str, description: str, passed: bool, details: str = ""):
+        status = "✅ PASS" if passed else "❌ FAIL"
+        self.results.append({
+            "test": test_num,
+            "description": description,
+            "status": status,
+            "details": details
+        })
+        print(f"{status} - {test_num}: {description}")
         if details:
             print(f"  Details: {details}")
-
-
-def make_request(method: str, endpoint: str, token: Optional[str] = None, 
-                 json_data: Optional[Dict] = None, expect_error: bool = False):
-    """Make HTTP request and return response"""
-    url = f"{BASE_URL}{endpoint}"
-    headers = {}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
     
-    try:
-        if method == "GET":
-            resp = requests.get(url, headers=headers, timeout=60)
-        elif method == "POST":
-            resp = requests.post(url, headers=headers, json=json_data, timeout=60)
-        elif method == "PUT":
-            resp = requests.put(url, headers=headers, json=json_data, timeout=60)
-        elif method == "DELETE":
-            resp = requests.delete(url, headers=headers, timeout=60)
-        else:
-            raise ValueError(f"Unsupported method: {method}")
-        
-        return resp
-    except requests.exceptions.Timeout as e:
-        print(f"⚠️  Request timeout: {method} {endpoint}")
-        return None
-    except requests.exceptions.ConnectionError as e:
-        print(f"⚠️  Connection error: {method} {endpoint} - {e}")
-        return None
-    except Exception as e:
-        print(f"⚠️  Request error: {method} {endpoint} - {e}")
-        return None
-
-
-def test_1_registration():
-    """Test 1: REGISTRATION - POST /api/ins/register creates PENDING institution"""
-    global owner_token, owner_user, ins_id
-    
-    print("\n=== Test 1: Institution Registration (PENDING status) ===")
-    
-    # First register owner user
-    timestamp = int(time.time())
-    owner_email = f"owner{timestamp}@test.traksha.org"
-    owner_password = "password123"
-    
-    resp = make_request("POST", "/auth/register", json_data={
-        "email": owner_email,
-        "password": owner_password,
-        "display_name": f"Owner User {timestamp}"
-    })
-    
-    if not resp or resp.status_code != 200:
-        log_test("1", False, "200", str(resp.status_code if resp else "No response"), 
-                 "Failed to register owner user")
-        return False
-    
-    data = resp.json()
-    owner_token = data["access_token"]
-    owner_user = data["user"]
-    print(f"✓ Owner registered: {owner_user['identity_code']}")
-    
-    # Now register institution
-    resp = make_request("POST", "/ins/register", token=owner_token, json_data={
-        "name": "Acme Organization",
-        "email": "info@acme.org",
-        "applicant_role": "Director"
-    })
-    
-    if not resp or resp.status_code != 200:
-        log_test("1", False, "200", str(resp.status_code if resp else "No response"),
-                 "Failed to register institution")
-        return False
-    
-    data = resp.json()
-    ins = data.get("institution", {})
-    ins_id = ins.get("id")
-    
-    # Verify status is PENDING
-    if ins.get("status") == "pending":
-        log_test("1", True, "status=pending", f"status={ins.get('status')}", 
-                 f"Institution {ins_id} created with PENDING status")
-        print(f"✓ Institution ID: {ins_id}")
-        return True
-    else:
-        log_test("1", False, "status=pending", f"status={ins.get('status')}", 
-                 "Institution should be PENDING, not instantly approved")
-        return False
-
-
-def test_2_get_mine():
-    """Test 2: GET /api/ins/mine returns pending institution"""
-    print("\n=== Test 2: Get My Institutions (includes PENDING) ===")
-    
-    resp = make_request("GET", "/ins/mine", token=owner_token)
-    
-    if not resp or resp.status_code != 200:
-        log_test("2", False, "200", str(resp.status_code if resp else "No response"),
-                 "Failed to get institutions")
-        return False
-    
-    data = resp.json()
-    institutions = data.get("institutions", [])
-    
-    # Check if pending institution is in the list
-    found = any(i.get("id") == ins_id and i.get("status") == "pending" for i in institutions)
-    
-    if found:
-        log_test("2", True, "pending institution in list", "found", 
-                 "Pending institution appears in /ins/mine")
-        return True
-    else:
-        log_test("2", False, "pending institution in list", "not found",
-                 f"Expected to find institution {ins_id} with status=pending")
-        return False
-
-
-def test_3_pending_access():
-    """Test 3: PENDING ACCESS - non-member gets 403, owner cannot manage while pending"""
-    global member_token, member_user
-    
-    print("\n=== Test 3: Pending Access Restrictions ===")
-    
-    # Register second user (member)
-    timestamp = int(time.time())
-    member_email = f"member{timestamp}@test.traksha.org"
-    member_password = "password123"
-    
-    resp = make_request("POST", "/auth/register", json_data={
-        "email": member_email,
-        "password": member_password,
-        "display_name": f"Member User {timestamp}"
-    })
-    
-    if not resp or resp.status_code != 200:
-        log_test("3a", False, "200", str(resp.status_code if resp else "No response"),
-                 "Failed to register member user")
-        return False
-    
-    data = resp.json()
-    member_token = data["access_token"]
-    member_user = data["user"]
-    print(f"✓ Member registered: {member_user['identity_code']}")
-    
-    # Test 3a: Member (non-associated) tries to access institution -> 403
-    resp = make_request("GET", f"/ins/{ins_id}", token=member_token)
-    
-    if resp and resp.status_code == 403:
-        log_test("3a", True, "403", "403", 
-                 "Non-associated user correctly denied access to pending institution")
-    else:
-        log_test("3a", False, "403", str(resp.status_code if resp else "No response"),
-                 "Non-associated user should get 403 for pending institution")
-    
-    # Test 3b: Owner tries to update profile while pending -> should fail (400 or 403)
-    resp = make_request("PUT", f"/ins/{ins_id}/profile", token=owner_token, json_data={
-        "description": "Test description"
-    })
-    
-    if resp and resp.status_code in (400, 403):
-        log_test("3b", True, "400 or 403", str(resp.status_code),
-                 "Owner correctly denied profile update while institution is pending")
-        return True
-    else:
-        log_test("3b", False, "400 or 403", str(resp.status_code if resp else "No response"),
-                 "Owner should not be able to update profile while institution is pending")
-        return False
-
-
-def test_4_verification_approval():
-    """Test 4: VERIFICATION/APPROVAL - grant admin, list applications, approve"""
-    print("\n=== Test 4: Verification and Approval Workflow ===")
-    
-    # Test 4a: Grant admin to owner user
-    resp = make_request("POST", "/ins/dev/grant-admin", token=owner_token)
-    
-    if not resp or resp.status_code != 200:
-        log_test("4a", False, "200", str(resp.status_code if resp else "No response"),
-                 "Failed to grant admin")
-        return False
-    
-    print("✓ Admin granted to owner user")
-    
-    # Test 4b: Non-admin (member) tries to list applications -> 403
-    resp = make_request("GET", "/ins/admin/applications", token=member_token)
-    
-    if resp and resp.status_code == 403:
-        log_test("4b", True, "403", "403",
-                 "Non-admin correctly denied access to admin applications")
-    else:
-        log_test("4b", False, "403", str(resp.status_code if resp else "No response"),
-                 "Non-admin should get 403 for admin applications")
-    
-    # Test 4c: Admin lists applications
-    resp = make_request("GET", "/ins/admin/applications", token=owner_token)
-    
-    if not resp or resp.status_code != 200:
-        log_test("4c", False, "200", str(resp.status_code if resp else "No response"),
-                 "Admin failed to list applications")
-        return False
-    
-    data = resp.json()
-    applications = data.get("applications", [])
-    found = any(app.get("id") == ins_id for app in applications)
-    
-    if found:
-        log_test("4c", True, "pending app in list", "found",
-                 "Pending application appears in admin list")
-    else:
-        log_test("4c", False, "pending app in list", "not found",
-                 f"Expected to find application {ins_id}")
-    
-    # Test 4d: Approve institution
-    resp = make_request("POST", f"/ins/admin/applications/{ins_id}/approve", token=owner_token)
-    
-    if resp and resp.status_code == 200:
-        log_test("4d", True, "200", "200",
-                 "Institution approved successfully")
-        print("✓ Institution approved")
-        return True
-    else:
-        log_test("4d", False, "200", str(resp.status_code if resp else "No response"),
-                 "Failed to approve institution")
-        return False
-
-
-def test_5_ownership():
-    """Test 5: OWNERSHIP - after approval, owner has is_owner=true and permissions=['*']"""
-    global member_id
-    
-    print("\n=== Test 5: Ownership After Approval ===")
-    
-    # Get institution details as owner
-    resp = make_request("GET", f"/ins/{ins_id}", token=owner_token)
-    
-    if not resp or resp.status_code != 200:
-        log_test("5a", False, "200", str(resp.status_code if resp else "No response"),
-                 "Failed to get institution details")
-        return False
-    
-    data = resp.json()
-    ins = data.get("institution", {})
-    
-    # Check is_owner
-    is_owner = ins.get("is_owner", False)
-    my_permissions = ins.get("my_permissions", [])
-    
-    if is_owner and "*" in my_permissions:
-        log_test("5a", True, "is_owner=true, permissions=['*']", 
-                 f"is_owner={is_owner}, permissions={my_permissions}",
-                 "Owner has correct ownership and permissions")
-    else:
-        log_test("5a", False, "is_owner=true, permissions=['*']",
-                 f"is_owner={is_owner}, permissions={my_permissions}",
-                 "Owner should have is_owner=true and permissions=['*']")
-    
-    # Test 5b: Check owner-member record exists
-    resp = make_request("GET", f"/ins/{ins_id}/members", token=owner_token)
-    
-    if not resp or resp.status_code != 200:
-        log_test("5b", False, "200", str(resp.status_code if resp else "No response"),
-                 "Failed to get members list")
-        return False
-    
-    data = resp.json()
-    members = data.get("members", [])
-    
-    owner_member = next((m for m in members if m.get("relationship") == "owner"), None)
-    
-    if owner_member:
-        log_test("5b", True, "owner-member record exists", "found",
-                 "Owner-member record created on approval")
-        return True
-    else:
-        log_test("5b", False, "owner-member record exists", "not found",
-                 "Expected owner-member record after approval")
-        return False
-
-
-def test_6_profile():
-    """Test 6: PROFILE - owner can update institution profile"""
-    print("\n=== Test 6: Profile Management ===")
-    
-    resp = make_request("PUT", f"/ins/{ins_id}/profile", token=owner_token, json_data={
-        "description": "A test organization for INS Phase A testing"
-    })
-    
-    if not resp or resp.status_code != 200:
-        log_test("6", False, "200", str(resp.status_code if resp else "No response"),
-                 "Failed to update profile")
-        return False
-    
-    # Verify it persisted
-    resp = make_request("GET", f"/ins/{ins_id}", token=owner_token)
-    
-    if resp and resp.status_code == 200:
+    def register_user(self, email: str, password: str, display_name: str) -> Dict[str, Any]:
+        """Register a new user and return token, user_id, identity_code"""
+        resp = requests.post(f"{BASE_URL}/auth/register", json={
+            "email": email,
+            "password": password,
+            "display_name": display_name
+        })
+        if resp.status_code != 200:
+            raise Exception(f"Failed to register {email}: {resp.status_code} {resp.text}")
         data = resp.json()
-        ins = data.get("institution", {})
-        description = ins.get("description", "")
+        return {
+            "token": data["access_token"],
+            "user_id": data["user"]["id"],
+            "identity_code": data["user"]["identity_code"]
+        }
+    
+    def setup_fixture(self):
+        """Setup: register users, create institution, add members"""
+        print("\n=== SETUP FIXTURE ===")
         
-        if "test organization" in description.lower():
-            log_test("6", True, "profile updated and persisted", "success",
-                     "Profile update persisted correctly")
-            return True
+        # Register owner
+        import random
+        rand = random.randint(10000, 99999)
+        owner_data = self.register_user(
+            f"owner{rand}@test.com",
+            "password123",
+            "Owner User"
+        )
+        self.owner_token = owner_data["token"]
+        self.owner_user_id = owner_data["user_id"]
+        self.owner_identity_code = owner_data["identity_code"]
+        print(f"✓ Owner registered: {self.owner_user_id}")
+        
+        # Register memberA
+        memberA_data = self.register_user(
+            f"memberA{rand}@test.com",
+            "password123",
+            "Member A"
+        )
+        self.memberA_token = memberA_data["token"]
+        self.memberA_user_id = memberA_data["user_id"]
+        self.memberA_identity_code = memberA_data["identity_code"]
+        print(f"✓ MemberA registered: {self.memberA_user_id}")
+        
+        # Register memberB
+        memberB_data = self.register_user(
+            f"memberB{rand}@test.com",
+            "password123",
+            "Member B"
+        )
+        self.memberB_token = memberB_data["token"]
+        self.memberB_user_id = memberB_data["user_id"]
+        self.memberB_identity_code = memberB_data["identity_code"]
+        print(f"✓ MemberB registered: {self.memberB_user_id}")
+        
+        # Owner registers institution
+        resp = requests.post(
+            f"{BASE_URL}/ins/register",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={
+                "name": f"Test Institution {rand}",
+                "email": f"ins{rand}@test.com",
+                "applicant_role": "Director"
+            }
+        )
+        if resp.status_code != 200:
+            raise Exception(f"Failed to register institution: {resp.status_code} {resp.text}")
+        self.ins_id = resp.json()["institution"]["id"]
+        print(f"✓ Institution registered: {self.ins_id}")
+        
+        # Owner grants admin to self
+        resp = requests.post(
+            f"{BASE_URL}/ins/dev/grant-admin",
+            headers={"Authorization": f"Bearer {self.owner_token}"}
+        )
+        if resp.status_code != 200:
+            raise Exception(f"Failed to grant admin: {resp.status_code} {resp.text}")
+        print(f"✓ Owner granted admin")
+        
+        # Owner approves institution
+        resp = requests.post(
+            f"{BASE_URL}/ins/admin/applications/{self.ins_id}/approve",
+            headers={"Authorization": f"Bearer {self.owner_token}"}
+        )
+        if resp.status_code != 200:
+            raise Exception(f"Failed to approve institution: {resp.status_code} {resp.text}")
+        print(f"✓ Institution approved")
+        
+        # Owner adds memberA to institution
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/members",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={"identity_code": self.memberA_identity_code}
+        )
+        if resp.status_code != 200:
+            raise Exception(f"Failed to add memberA: {resp.status_code} {resp.text}")
+        print(f"✓ MemberA added to institution")
+        
+        # Owner adds memberB to institution
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/members",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={"identity_code": self.memberB_identity_code}
+        )
+        if resp.status_code != 200:
+            raise Exception(f"Failed to add memberB: {resp.status_code} {resp.text}")
+        print(f"✓ MemberB added to institution")
+        
+        # Get member records to extract member_ids
+        resp = requests.get(
+            f"{BASE_URL}/ins/{self.ins_id}/members",
+            headers={"Authorization": f"Bearer {self.owner_token}"}
+        )
+        if resp.status_code != 200:
+            raise Exception(f"Failed to get members: {resp.status_code} {resp.text}")
+        members = resp.json()["members"]
+        for m in members:
+            if m["user"]["id"] == self.memberA_user_id:
+                self.memberA_member_id = m["id"]
+            elif m["user"]["id"] == self.memberB_user_id:
+                self.memberB_member_id = m["id"]
+        print(f"✓ MemberA member_id: {self.memberA_member_id}")
+        print(f"✓ MemberB member_id: {self.memberB_member_id}")
+        
+        print("=== SETUP COMPLETE ===\n")
+    
+    def test_1_department_creation(self):
+        """Test 1: DEPARTMENT CREATION"""
+        print("\n=== TEST 1: DEPARTMENT CREATION ===")
+        
+        # Create Dept A
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/departments",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={"name": "Dept A", "kind": "department"}
+        )
+        if resp.status_code == 200:
+            self.deptA_id = resp.json()["department"]["id"]
+            self.log("1.1", "Create Dept A (kind=department)", True, f"Status: {resp.status_code}, ID: {self.deptA_id}")
         else:
-            log_test("6", False, "profile updated and persisted", "not persisted",
-                     f"Description not persisted: {description}")
-            return False
-    else:
-        log_test("6", False, "200", str(resp.status_code if resp else "No response"),
-                 "Failed to verify profile update")
-        return False
-
-
-def test_7_member_association():
-    """Test 7: MEMBER ASSOCIATION - add member by identity_code"""
-    global member_id
-    
-    print("\n=== Test 7: Member Association ===")
-    
-    # Test 7a: Add member with valid identity_code
-    resp = make_request("POST", f"/ins/{ins_id}/members", token=owner_token, json_data={
-        "identity_code": member_user["identity_code"],
-        "title": "Team Member"
-    })
-    
-    if not resp or resp.status_code != 200:
-        log_test("7a", False, "200", str(resp.status_code if resp else "No response"),
-                 "Failed to add member")
-        return False
-    
-    data = resp.json()
-    member = data.get("member", {})
-    member_id = member.get("id")
-    
-    log_test("7a", True, "200", "200",
-             f"Member added successfully: {member_id}")
-    print(f"✓ Member ID: {member_id}")
-    
-    # Test 7b: Try to add bogus identity_code -> 404
-    resp = make_request("POST", f"/ins/{ins_id}/members", token=owner_token, json_data={
-        "identity_code": "BOGUS1234567890X",
-        "title": "Fake Member"
-    })
-    
-    if resp and resp.status_code == 404:
-        log_test("7b", True, "404", "404",
-                 "Bogus identity_code correctly returns 404")
-        return True
-    else:
-        log_test("7b", False, "404", str(resp.status_code if resp else "No response"),
-                 "Bogus identity_code should return 404")
-        return False
-
-
-def test_8_custom_role():
-    """Test 8: CUSTOM ROLE - create role with permissions and scope, validate catalog"""
-    global role_id
-    
-    print("\n=== Test 8: Custom Role Creation ===")
-    
-    # Test 8a: Get permissions catalog
-    resp = make_request("GET", "/ins/permissions/catalog", token=owner_token)
-    
-    if not resp or resp.status_code != 200:
-        log_test("8a", False, "200", str(resp.status_code if resp else "No response"),
-                 "Failed to get permissions catalog")
-        return False
-    
-    data = resp.json()
-    permissions = data.get("permissions", [])
-    scopes = data.get("scopes", [])
-    
-    if permissions and scopes:
-        log_test("8a", True, "catalog with permissions and scopes", "found",
-                 f"Catalog has {len(permissions)} permissions and {len(scopes)} scope types")
-    else:
-        log_test("8a", False, "catalog with permissions and scopes", "incomplete",
-                 "Catalog should have permissions and scopes")
-    
-    # Test 8b: Create role with valid permissions and scope
-    resp = make_request("POST", f"/ins/{ins_id}/roles", token=owner_token, json_data={
-        "name": "Coordinator",
-        "description": "Team coordinator role",
-        "permissions": ["members:view", "members:invite"],
-        "scope": {"type": "department", "label": "Operations"}
-    })
-    
-    if not resp or resp.status_code != 200:
-        log_test("8b", False, "200", str(resp.status_code if resp else "No response"),
-                 "Failed to create role")
-        return False
-    
-    data = resp.json()
-    role = data.get("role", {})
-    role_id = role.get("id")
-    
-    log_test("8b", True, "200", "200",
-             f"Role created successfully: {role_id}")
-    print(f"✓ Role ID: {role_id}")
-    
-    # Test 8c: Try to create role with invalid permission -> 400
-    resp = make_request("POST", f"/ins/{ins_id}/roles", token=owner_token, json_data={
-        "name": "Invalid Role",
-        "description": "Should fail",
-        "permissions": ["invalid:permission"],
-        "scope": {"type": "department", "label": "Test"}
-    })
-    
-    if resp and resp.status_code == 400:
-        log_test("8c", True, "400", "400",
-                 "Invalid permission correctly returns 400")
-    else:
-        log_test("8c", False, "400", str(resp.status_code if resp else "No response"),
-                 "Invalid permission should return 400")
-    
-    # Test 8d: Try to create role with invalid scope type -> 400
-    resp = make_request("POST", f"/ins/{ins_id}/roles", token=owner_token, json_data={
-        "name": "Invalid Scope Role",
-        "description": "Should fail",
-        "permissions": ["members:view"],
-        "scope": {"type": "invalid_scope", "label": "Test"}
-    })
-    
-    if resp and resp.status_code == 400:
-        log_test("8d", True, "400", "400",
-                 "Invalid scope type correctly returns 400")
-        return True
-    else:
-        log_test("8d", False, "400", str(resp.status_code if resp else "No response"),
-                 "Invalid scope type should return 400")
-        return False
-
-
-def test_9_authorization_enforcement():
-    """Test 9: AUTHORIZATION ENFORCEMENT - member without roles gets 403 for protected actions"""
-    print("\n=== Test 9: Authorization Enforcement (Negative Tests) ===")
-    
-    # Test 9a: Member tries to create role -> 403
-    resp = make_request("POST", f"/ins/{ins_id}/roles", token=member_token, json_data={
-        "name": "Unauthorized Role",
-        "description": "Should fail",
-        "permissions": ["members:view"],
-        "scope": {"type": "institution", "label": ""}
-    })
-    
-    if resp and resp.status_code == 403:
-        log_test("9a", True, "403", "403",
-                 "Member without roles correctly denied role creation")
-    else:
-        log_test("9a", False, "403", str(resp.status_code if resp else "No response"),
-                 "Member without roles should get 403 for role creation")
-    
-    # Test 9b: Member tries to add another member -> 403
-    resp = make_request("POST", f"/ins/{ins_id}/members", token=member_token, json_data={
-        "identity_code": "TESTCODE12345678",
-        "title": "Test"
-    })
-    
-    if resp and resp.status_code == 403:
-        log_test("9b", True, "403", "403",
-                 "Member without roles correctly denied member addition")
-    else:
-        log_test("9b", False, "403", str(resp.status_code if resp else "No response"),
-                 "Member without roles should get 403 for member addition")
-    
-    # Test 9c: Member can view members (any active member can view) -> 200
-    resp = make_request("GET", f"/ins/{ins_id}/members", token=member_token)
-    
-    if resp and resp.status_code == 200:
-        log_test("9c", True, "200", "200",
-                 "Member can view members list (allowed for all active members)")
-    else:
-        log_test("9c", False, "200", str(resp.status_code if resp else "No response"),
-                 "Member should be able to view members list")
-    
-    # Test 9d: Member can view roles -> 200
-    resp = make_request("GET", f"/ins/{ins_id}/roles", token=member_token)
-    
-    if resp and resp.status_code == 200:
-        log_test("9d", True, "200", "200",
-                 "Member can view roles list (allowed for all active members)")
-        return True
-    else:
-        log_test("9d", False, "200", str(resp.status_code if resp else "No response"),
-                 "Member should be able to view roles list")
-        return False
-
-
-def test_10_role_assignment_approval():
-    """Test 10: ROLE ASSIGNMENT + APPROVAL WORKFLOW"""
-    global assignment_id, approval_id
-    
-    print("\n=== Test 10: Role Assignment and Approval Workflow ===")
-    
-    # Test 10a: Assign role to member -> creates pending approval
-    resp = make_request("POST", f"/ins/{ins_id}/members/{member_id}/roles", 
-                       token=owner_token, json_data={
-        "role_id": role_id
-    })
-    
-    if not resp or resp.status_code != 200:
-        log_test("10a", False, "200", str(resp.status_code if resp else "No response"),
-                 "Failed to assign role")
-        return False
-    
-    data = resp.json()
-    assignment = data.get("assignment", {})
-    assignment_id = assignment.get("assignment_id")
-    approval_id = data.get("approval_id")
-    
-    if assignment.get("state") == "pending_approval":
-        log_test("10a", True, "state=pending_approval", f"state={assignment.get('state')}",
-                 f"Role assignment created with pending approval: {approval_id}")
-        print(f"✓ Assignment ID: {assignment_id}")
-        print(f"✓ Approval ID: {approval_id}")
-    else:
-        log_test("10a", False, "state=pending_approval", f"state={assignment.get('state')}",
-                 "Role assignment should be pending_approval")
-    
-    # Test 10b: Member tries to use permission while pending -> 403
-    resp = make_request("POST", f"/ins/{ins_id}/members", token=member_token, json_data={
-        "identity_code": "TESTCODE12345678",
-        "title": "Test"
-    })
-    
-    if resp and resp.status_code == 403:
-        log_test("10b", True, "403", "403",
-                 "Member cannot use permission while role is pending approval")
-    else:
-        log_test("10b", False, "403", str(resp.status_code if resp else "No response"),
-                 "Member should not be able to use permission while pending")
-    
-    # Test 10c: List approvals as owner
-    resp = make_request("GET", f"/ins/{ins_id}/approvals", token=owner_token)
-    
-    if not resp or resp.status_code != 200:
-        log_test("10c", False, "200", str(resp.status_code if resp else "No response"),
-                 "Failed to list approvals")
-        return False
-    
-    data = resp.json()
-    approvals = data.get("approvals", [])
-    found = any(a.get("id") == approval_id for a in approvals)
-    
-    if found:
-        log_test("10c", True, "pending approval in list", "found",
-                 "Pending approval appears in approvals list")
-    else:
-        log_test("10c", False, "pending approval in list", "not found",
-                 f"Expected to find approval {approval_id}")
-    
-    # Test 10d: Approve the role assignment
-    resp = make_request("POST", f"/ins/{ins_id}/approvals/{approval_id}/approve",
-                       token=owner_token)
-    
-    if not resp or resp.status_code != 200:
-        log_test("10d", False, "200", str(resp.status_code if resp else "No response"),
-                 "Failed to approve role assignment")
-        return False
-    
-    log_test("10d", True, "200", "200",
-             "Role assignment approved successfully")
-    print("✓ Role assignment approved")
-    
-    # Test 10e: Member now has permission - try to add member with bogus code -> 404 (not 403)
-    resp = make_request("POST", f"/ins/{ins_id}/members", token=member_token, json_data={
-        "identity_code": "BOGUS1234567890X",
-        "title": "Test"
-    })
-    
-    if resp and resp.status_code == 404:
-        log_test("10e", True, "404 (permission passed, code not found)", "404",
-                 "Member now has members:invite permission (404 means permission passed)")
-    else:
-        log_test("10e", False, "404", str(resp.status_code if resp else "No response"),
-                 "Member should have permission now (404 expected, not 403)")
-    
-    # Test 10f: Member still cannot manage roles -> 403
-    resp = make_request("POST", f"/ins/{ins_id}/roles", token=member_token, json_data={
-        "name": "Test Role",
-        "description": "Should fail",
-        "permissions": ["members:view"],
-        "scope": {"type": "institution", "label": ""}
-    })
-    
-    if resp and resp.status_code == 403:
-        log_test("10f", True, "403", "403",
-                 "Member still cannot manage roles (correct)")
-        return True
-    else:
-        log_test("10f", False, "403", str(resp.status_code if resp else "No response"),
-                 "Member should not have roles:manage permission")
-        return False
-
-
-def test_11_scope():
-    """Test 11: SCOPE - verify scope persists in role and assignment"""
-    print("\n=== Test 11: Scope Persistence ===")
-    
-    # Get role and verify scope
-    resp = make_request("GET", f"/ins/{ins_id}/roles", token=owner_token)
-    
-    if not resp or resp.status_code != 200:
-        log_test("11a", False, "200", str(resp.status_code if resp else "No response"),
-                 "Failed to get roles")
-        return False
-    
-    data = resp.json()
-    roles = data.get("roles", [])
-    role = next((r for r in roles if r.get("id") == role_id), None)
-    
-    if role:
-        scope = role.get("scope", {})
-        if scope.get("type") == "department" and scope.get("label") == "Operations":
-            log_test("11a", True, "scope persisted in role", 
-                     f"type={scope.get('type')}, label={scope.get('label')}",
-                     "Scope correctly persisted in role")
+            self.log("1.1", "Create Dept A (kind=department)", False, f"Status: {resp.status_code}, Response: {resp.text}")
+        
+        # Create Dept B
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/departments",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={"name": "Dept B", "kind": "department"}
+        )
+        if resp.status_code == 200:
+            self.deptB_id = resp.json()["department"]["id"]
+            self.log("1.2", "Create Dept B (kind=department)", True, f"Status: {resp.status_code}, ID: {self.deptB_id}")
         else:
-            log_test("11a", False, "scope persisted in role",
-                     f"type={scope.get('type')}, label={scope.get('label')}",
-                     "Scope not correctly persisted")
-    else:
-        log_test("11a", False, "role found", "not found",
-                 f"Role {role_id} not found in roles list")
-    
-    # Get member and verify scope in assignment
-    resp = make_request("GET", f"/ins/{ins_id}/members", token=owner_token)
-    
-    if not resp or resp.status_code != 200:
-        log_test("11b", False, "200", str(resp.status_code if resp else "No response"),
-                 "Failed to get members")
-        return False
-    
-    data = resp.json()
-    members = data.get("members", [])
-    member = next((m for m in members if m.get("id") == member_id), None)
-    
-    if member:
-        roles = member.get("roles", [])
-        assignment = next((r for r in roles if r.get("assignment_id") == assignment_id), None)
+            self.log("1.2", "Create Dept B (kind=department)", False, f"Status: {resp.status_code}, Response: {resp.text}")
         
-        if assignment:
-            scope = assignment.get("scope", {})
-            if scope.get("type") == "department" and scope.get("label") == "Operations":
-                log_test("11b", True, "scope persisted in assignment",
-                         f"type={scope.get('type')}, label={scope.get('label')}",
-                         "Scope correctly persisted in role assignment")
-                return True
-            else:
-                log_test("11b", False, "scope persisted in assignment",
-                         f"type={scope.get('type')}, label={scope.get('label')}",
-                         "Scope not correctly persisted in assignment")
-                return False
+        # Create Team X
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/departments",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={"name": "Team X", "kind": "team"}
+        )
+        if resp.status_code == 200:
+            self.teamX_id = resp.json()["department"]["id"]
+            self.log("1.3", "Create Team X (kind=team)", True, f"Status: {resp.status_code}, ID: {self.teamX_id}")
         else:
-            log_test("11b", False, "assignment found", "not found",
-                     f"Assignment {assignment_id} not found")
-            return False
-    else:
-        log_test("11b", False, "member found", "not found",
-                 f"Member {member_id} not found")
-        return False
-
-
-def test_12_revoke():
-    """Test 12: REVOKE - revoke role and verify member loses permission"""
-    print("\n=== Test 12: Role Revocation ===")
-    
-    # Revoke the role assignment
-    resp = make_request("DELETE", f"/ins/{ins_id}/members/{member_id}/roles/{assignment_id}",
-                       token=owner_token)
-    
-    if not resp or resp.status_code != 200:
-        log_test("12a", False, "200", str(resp.status_code if resp else "No response"),
-                 "Failed to revoke role")
-        return False
-    
-    log_test("12a", True, "200", "200",
-             "Role revoked successfully")
-    print("✓ Role revoked")
-    
-    # Test 12b: Member tries to use permission again -> 403
-    resp = make_request("POST", f"/ins/{ins_id}/members", token=member_token, json_data={
-        "identity_code": "TESTCODE12345678",
-        "title": "Test"
-    })
-    
-    if resp and resp.status_code == 403:
-        log_test("12b", True, "403", "403",
-                 "Member correctly lost permission after revocation")
-        return True
-    else:
-        log_test("12b", False, "403", str(resp.status_code if resp else "No response"),
-                 "Member should lose permission after revocation")
-        return False
-
-
-def test_13_regression():
-    """Test 13: REGRESSION - verify existing identity endpoints still work"""
-    print("\n=== Test 13: Regression Tests (Existing Endpoints) ===")
-    
-    # Test 13a: POST /api/auth/register (already tested, but verify again)
-    timestamp = int(time.time())
-    resp = make_request("POST", "/auth/register", json_data={
-        "email": f"regression{timestamp}@test.traksha.org",
-        "password": "password123",
-        "display_name": "Regression Test User"
-    })
-    
-    if resp and resp.status_code == 200:
-        log_test("13a", True, "200", "200", "POST /api/auth/register works")
-        regression_token = resp.json()["access_token"]
-    else:
-        log_test("13a", False, "200", str(resp.status_code if resp else "No response"),
-                 "POST /api/auth/register failed")
-        return False
-    
-    # Test 13b: POST /api/auth/login
-    resp = make_request("POST", "/auth/login", json_data={
-        "email": f"regression{timestamp}@test.traksha.org",
-        "password": "password123"
-    })
-    
-    if resp and resp.status_code == 200:
-        log_test("13b", True, "200", "200", "POST /api/auth/login works")
-    else:
-        log_test("13b", False, "200", str(resp.status_code if resp else "No response"),
-                 "POST /api/auth/login failed")
-    
-    # Test 13c: GET /api/auth/me
-    resp = make_request("GET", "/auth/me", token=regression_token)
-    
-    if resp and resp.status_code == 200:
-        log_test("13c", True, "200", "200", "GET /api/auth/me works")
-    else:
-        log_test("13c", False, "200", str(resp.status_code if resp else "No response"),
-                 "GET /api/auth/me failed")
-    
-    # Test 13d: GET /api/identity/me
-    resp = make_request("GET", "/identity/me", token=regression_token)
-    
-    if resp and resp.status_code == 200:
-        log_test("13d", True, "200", "200", "GET /api/identity/me works")
-    else:
-        log_test("13d", False, "200", str(resp.status_code if resp else "No response"),
-                 "GET /api/identity/me failed")
-    
-    # Test 13e: POST /api/dev/simulate-transition (TMP->TRK)
-    resp = make_request("POST", "/dev/simulate-transition", token=regression_token)
-    
-    if resp and resp.status_code == 200:
-        log_test("13e", True, "200", "200", "POST /api/dev/simulate-transition works")
-    else:
-        log_test("13e", False, "200", str(resp.status_code if resp else "No response"),
-                 "POST /api/dev/simulate-transition failed")
-    
-    # Test 13f: GET /api/search
-    resp = make_request("GET", "/search?q=test&type=all", token=regression_token)
-    
-    if resp and resp.status_code == 200:
-        log_test("13f", True, "200", "200", "GET /api/search works")
-        return True
-    else:
-        log_test("13f", False, "200", str(resp.status_code if resp else "No response"),
-                 "GET /api/search failed")
-        return False
-
-
-def print_summary():
-    """Print test summary"""
-    print("\n" + "="*80)
-    print("TEST SUMMARY")
-    print("="*80)
-    
-    passed = sum(1 for r in results if r["passed"])
-    failed = sum(1 for r in results if not r["passed"])
-    total = len(results)
-    
-    print(f"\nTotal Tests: {total}")
-    print(f"Passed: {passed} ✅")
-    print(f"Failed: {failed} ❌")
-    print(f"Success Rate: {(passed/total*100):.1f}%\n")
-    
-    if failed > 0:
-        print("FAILED TESTS:")
-        print("-" * 80)
-        for r in results:
-            if not r["passed"]:
-                print(f"Scenario {r['scenario']}: {r['details']}")
-                print(f"  Expected: {r['expected']}")
-                print(f"  Actual: {r['actual']}")
-                print()
-    
-    return failed == 0
-
-
-def main():
-    """Run all tests"""
-    print("="*80)
-    print("INS PHASE A BACKEND TEST SUITE")
-    print("="*80)
-    print(f"Backend URL: {BASE_URL}")
-    print()
-    
-    try:
-        # Run all tests in sequence
-        test_1_registration()
-        test_2_get_mine()
-        test_3_pending_access()
-        test_4_verification_approval()
-        test_5_ownership()
-        test_6_profile()
-        test_7_member_association()
-        test_8_custom_role()
-        test_9_authorization_enforcement()
-        test_10_role_assignment_approval()
-        test_11_scope()
-        test_12_revoke()
-        test_13_regression()
+            self.log("1.3", "Create Team X (kind=team)", False, f"Status: {resp.status_code}, Response: {resp.text}")
         
-        # Print summary
-        success = print_summary()
+        # Invalid kind
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/departments",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={"name": "Invalid", "kind": "foo"}
+        )
+        self.log("1.4", "Invalid kind (kind=foo) returns 400", resp.status_code == 400, f"Status: {resp.status_code}")
         
-        sys.exit(0 if success else 1)
+        # List departments
+        resp = requests.get(
+            f"{BASE_URL}/ins/{self.ins_id}/departments",
+            headers={"Authorization": f"Bearer {self.owner_token}"}
+        )
+        if resp.status_code == 200:
+            depts = resp.json()["departments"]
+            self.log("1.5", "GET departments lists all created", True, f"Status: {resp.status_code}, Count: {len(depts)}")
+        else:
+            self.log("1.5", "GET departments lists all created", False, f"Status: {resp.status_code}, Response: {resp.text}")
+    
+    def test_2_department_membership(self):
+        """Test 2: DEPARTMENT MEMBERSHIP"""
+        print("\n=== TEST 2: DEPARTMENT MEMBERSHIP ===")
         
-    except Exception as e:
-        print(f"\n❌ FATAL ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
+        # Add memberA to Dept A
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/departments/{self.deptA_id}/members",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={"user_id": self.memberA_user_id}
+        )
+        if resp.status_code == 200:
+            dept = resp.json()["department"]
+            has_member = self.memberA_user_id in dept.get("member_ids", [])
+            self.log("2.1", "Add memberA to Dept A", has_member, f"Status: {resp.status_code}, MemberA in list: {has_member}")
+        else:
+            self.log("2.1", "Add memberA to Dept A", False, f"Status: {resp.status_code}, Response: {resp.text}")
+        
+        # Try to add non-INS-member (use a fake user_id)
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/departments/{self.deptA_id}/members",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={"user_id": "nonexistent_user_id_12345"}
+        )
+        self.log("2.2", "Add non-INS-member returns 404", resp.status_code == 404, f"Status: {resp.status_code}")
+        
+        # Remove memberA from Dept A
+        resp = requests.delete(
+            f"{BASE_URL}/ins/{self.ins_id}/departments/{self.deptA_id}/members/{self.memberA_user_id}",
+            headers={"Authorization": f"Bearer {self.owner_token}"}
+        )
+        self.log("2.3", "Remove memberA from Dept A", resp.status_code == 200, f"Status: {resp.status_code}")
+        
+        # Re-add memberA for later tests
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/departments/{self.deptA_id}/members",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={"user_id": self.memberA_user_id}
+        )
+        if resp.status_code == 200:
+            self.log("2.4", "Re-add memberA to Dept A for later tests", True, f"Status: {resp.status_code}")
+        else:
+            self.log("2.4", "Re-add memberA to Dept A for later tests", False, f"Status: {resp.status_code}, Response: {resp.text}")
+    
+    def test_3_project_creation(self):
+        """Test 3: PROJECT CREATION"""
+        print("\n=== TEST 3: PROJECT CREATION ===")
+        
+        # Create Proj A in Dept A
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/projects",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={"name": "Proj A", "department_id": self.deptA_id}
+        )
+        if resp.status_code == 200:
+            self.projA_id = resp.json()["project"]["id"]
+            self.log("3.1", "Create Proj A in Dept A", True, f"Status: {resp.status_code}, ID: {self.projA_id}")
+        else:
+            self.log("3.1", "Create Proj A in Dept A", False, f"Status: {resp.status_code}, Response: {resp.text}")
+        
+        # Create Proj B in Dept B
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/projects",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={"name": "Proj B", "department_id": self.deptB_id}
+        )
+        if resp.status_code == 200:
+            self.projB_id = resp.json()["project"]["id"]
+            self.log("3.2", "Create Proj B in Dept B", True, f"Status: {resp.status_code}, ID: {self.projB_id}")
+        else:
+            self.log("3.2", "Create Proj B in Dept B", False, f"Status: {resp.status_code}, Response: {resp.text}")
+        
+        # Create floating project (no department)
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/projects",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={"name": "Floating"}
+        )
+        if resp.status_code == 200:
+            self.floating_proj_id = resp.json()["project"]["id"]
+            self.log("3.3", "Create floating project (no department)", True, f"Status: {resp.status_code}, ID: {self.floating_proj_id}")
+        else:
+            self.log("3.3", "Create floating project (no department)", False, f"Status: {resp.status_code}, Response: {resp.text}")
+        
+        # Invalid status
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/projects",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={"name": "Invalid Status", "status": "bogus"}
+        )
+        self.log("3.4", "Invalid status returns 400", resp.status_code == 400, f"Status: {resp.status_code}")
+        
+        # Non-existent department_id
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/projects",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={"name": "Bad Dept", "department_id": "nonexistent_dept_id"}
+        )
+        self.log("3.5", "Non-existent department_id returns 400", resp.status_code == 400, f"Status: {resp.status_code}")
+        
+        # List projects
+        resp = requests.get(
+            f"{BASE_URL}/ins/{self.ins_id}/projects",
+            headers={"Authorization": f"Bearer {self.owner_token}"}
+        )
+        if resp.status_code == 200:
+            projects = resp.json()["projects"]
+            has_dept_name = any(p.get("department_name") for p in projects if p.get("department_id"))
+            has_assignees = "assignees" in projects[0] if projects else False
+            self.log("3.6", "GET projects lists all with department_name and assignees", True, 
+                    f"Status: {resp.status_code}, Count: {len(projects)}, Has dept_name: {has_dept_name}, Has assignees: {has_assignees}")
+        else:
+            self.log("3.6", "GET projects lists all with department_name and assignees", False, f"Status: {resp.status_code}, Response: {resp.text}")
+    
+    def test_4_project_assignment(self):
+        """Test 4: PROJECT ASSIGNMENT"""
+        print("\n=== TEST 4: PROJECT ASSIGNMENT ===")
+        
+        # Assign memberA to Proj A
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/projects/{self.projA_id}/assignees",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={"user_id": self.memberA_user_id}
+        )
+        if resp.status_code == 200:
+            project = resp.json()["project"]
+            has_assignee = self.memberA_user_id in project.get("assignee_ids", [])
+            self.log("4.1", "Assign memberA to Proj A", has_assignee, f"Status: {resp.status_code}, MemberA in assignees: {has_assignee}")
+        else:
+            self.log("4.1", "Assign memberA to Proj A", False, f"Status: {resp.status_code}, Response: {resp.text}")
+        
+        # Try to assign non-INS-member
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/projects/{self.projA_id}/assignees",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={"user_id": "nonexistent_user_id_12345"}
+        )
+        self.log("4.2", "Assign non-INS-member returns 404", resp.status_code == 404, f"Status: {resp.status_code}")
+        
+        # Delete assignee
+        resp = requests.delete(
+            f"{BASE_URL}/ins/{self.ins_id}/projects/{self.projA_id}/assignees/{self.memberA_user_id}",
+            headers={"Authorization": f"Bearer {self.owner_token}"}
+        )
+        self.log("4.3", "Delete assignee", resp.status_code == 200, f"Status: {resp.status_code}")
+    
+    def test_5_scoped_authorization(self):
+        """Test 5: SCOPED AUTHORIZATION (the core)"""
+        print("\n=== TEST 5: SCOPED AUTHORIZATION ===")
+        
+        # Create role with department scope
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/roles",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={
+                "name": "Ops Manager",
+                "permissions": ["projects:manage", "projects:view", "departments:view"],
+                "scope": {"type": "institution"}
+            }
+        )
+        if resp.status_code == 200:
+            self.role_id = resp.json()["role"]["id"]
+            self.log("5.1", "Create role with permissions", True, f"Status: {resp.status_code}, Role ID: {self.role_id}")
+        else:
+            self.log("5.1", "Create role with permissions", False, f"Status: {resp.status_code}, Response: {resp.text}")
+            return
+        
+        # Assign role to memberA SCOPED to Dept A
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/members/{self.memberA_member_id}/roles",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={
+                "role_id": self.role_id,
+                "scope": {"type": "department", "ref": self.deptA_id, "label": "Dept A"}
+            }
+        )
+        if resp.status_code == 200:
+            self.approval_id = resp.json()["approval_id"]
+            self.log("5.2", "Assign role to memberA scoped to Dept A", True, f"Status: {resp.status_code}, Approval ID: {self.approval_id}")
+        else:
+            self.log("5.2", "Assign role to memberA scoped to Dept A", False, f"Status: {resp.status_code}, Response: {resp.text}")
+            return
+        
+        # Owner approves role assignment
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/approvals/{self.approval_id}/approve",
+            headers={"Authorization": f"Bearer {self.owner_token}"}
+        )
+        self.log("5.3", "Owner approves role assignment", resp.status_code == 200, f"Status: {resp.status_code}")
+        
+        # 5a: MemberA GET Proj A (in Dept A) - should be 200
+        resp = requests.get(
+            f"{BASE_URL}/ins/{self.ins_id}/projects/{self.projA_id}",
+            headers={"Authorization": f"Bearer {self.memberA_token}"}
+        )
+        self.log("5.4a", "MemberA GET Proj A (in Dept A) - ALLOWED", resp.status_code == 200, f"Status: {resp.status_code}")
+        
+        # 5b: MemberA GET Proj B (in Dept B) - should be 403
+        resp = requests.get(
+            f"{BASE_URL}/ins/{self.ins_id}/projects/{self.projB_id}",
+            headers={"Authorization": f"Bearer {self.memberA_token}"}
+        )
+        self.log("5.4b", "MemberA GET Proj B (in Dept B) - UNAUTHORIZED (403)", resp.status_code == 403, f"Status: {resp.status_code}")
+        
+        # 5c: MemberA PUT Proj A (in Dept A) - should be 200
+        resp = requests.put(
+            f"{BASE_URL}/ins/{self.ins_id}/projects/{self.projA_id}",
+            headers={"Authorization": f"Bearer {self.memberA_token}"},
+            json={"status": "on_hold"}
+        )
+        self.log("5.4c", "MemberA PUT Proj A (in Dept A) - ALLOWED", resp.status_code == 200, f"Status: {resp.status_code}")
+        
+        # 5d: MemberA PUT Proj B (in Dept B) - should be 403
+        resp = requests.put(
+            f"{BASE_URL}/ins/{self.ins_id}/projects/{self.projB_id}",
+            headers={"Authorization": f"Bearer {self.memberA_token}"},
+            json={"status": "on_hold"}
+        )
+        self.log("5.4d", "MemberA PUT Proj B (in Dept B) - UNAUTHORIZED (403)", resp.status_code == 403, f"Status: {resp.status_code}")
+        
+        # 5e: MemberA POST project in Dept A - should be 200
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/projects",
+            headers={"Authorization": f"Bearer {self.memberA_token}"},
+            json={"name": "NewInA", "department_id": self.deptA_id}
+        )
+        self.log("5.4e", "MemberA POST project in Dept A - ALLOWED", resp.status_code == 200, f"Status: {resp.status_code}")
+        
+        # 5f: MemberA POST project in Dept B - should be 403
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/projects",
+            headers={"Authorization": f"Bearer {self.memberA_token}"},
+            json={"name": "NewInB", "department_id": self.deptB_id}
+        )
+        self.log("5.4f", "MemberA POST project in Dept B - UNAUTHORIZED (403)", resp.status_code == 403, f"Status: {resp.status_code}")
+        
+        # 5g: MemberA POST department - should be 403 (needs institution scope)
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/departments",
+            headers={"Authorization": f"Bearer {self.memberA_token}"},
+            json={"name": "NopeDept", "kind": "department"}
+        )
+        self.log("5.4g", "MemberA POST department - UNAUTHORIZED (403, needs institution scope)", resp.status_code == 403, f"Status: {resp.status_code}")
+        
+        # 5h: MemberA GET Dept A - should be 200
+        resp = requests.get(
+            f"{BASE_URL}/ins/{self.ins_id}/departments/{self.deptA_id}",
+            headers={"Authorization": f"Bearer {self.memberA_token}"}
+        )
+        self.log("5.4h", "MemberA GET Dept A - ALLOWED", resp.status_code == 200, f"Status: {resp.status_code}")
+        
+        # 5i: MemberA GET Dept B - should be 403
+        resp = requests.get(
+            f"{BASE_URL}/ins/{self.ins_id}/departments/{self.deptB_id}",
+            headers={"Authorization": f"Bearer {self.memberA_token}"}
+        )
+        self.log("5.4i", "MemberA GET Dept B - UNAUTHORIZED (403)", resp.status_code == 403, f"Status: {resp.status_code}")
+    
+    def test_6_project_scoped_role(self):
+        """Test 6: PROJECT-SCOPED ROLE"""
+        print("\n=== TEST 6: PROJECT-SCOPED ROLE ===")
+        
+        # Create role for project scope
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/roles",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={
+                "name": "Project Manager",
+                "permissions": ["projects:manage", "projects:view"],
+                "scope": {"type": "institution"}
+            }
+        )
+        if resp.status_code == 200:
+            self.role_id_proj_scoped = resp.json()["role"]["id"]
+            self.log("6.1", "Create role for project scope", True, f"Status: {resp.status_code}, Role ID: {self.role_id_proj_scoped}")
+        else:
+            self.log("6.1", "Create role for project scope", False, f"Status: {resp.status_code}, Response: {resp.text}")
+            return
+        
+        # Assign role to memberB scoped to Proj A
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/members/{self.memberB_member_id}/roles",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={
+                "role_id": self.role_id_proj_scoped,
+                "scope": {"type": "project", "ref": self.projA_id, "label": "Proj A"}
+            }
+        )
+        if resp.status_code == 200:
+            self.approval_id_proj_scoped = resp.json()["approval_id"]
+            self.log("6.2", "Assign role to memberB scoped to Proj A", True, f"Status: {resp.status_code}, Approval ID: {self.approval_id_proj_scoped}")
+        else:
+            self.log("6.2", "Assign role to memberB scoped to Proj A", False, f"Status: {resp.status_code}, Response: {resp.text}")
+            return
+        
+        # Owner approves role assignment
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/approvals/{self.approval_id_proj_scoped}/approve",
+            headers={"Authorization": f"Bearer {self.owner_token}"}
+        )
+        self.log("6.3", "Owner approves project-scoped role assignment", resp.status_code == 200, f"Status: {resp.status_code}")
+        
+        # MemberB GET Proj A - should be 200
+        resp = requests.get(
+            f"{BASE_URL}/ins/{self.ins_id}/projects/{self.projA_id}",
+            headers={"Authorization": f"Bearer {self.memberB_token}"}
+        )
+        self.log("6.4a", "MemberB GET Proj A - ALLOWED", resp.status_code == 200, f"Status: {resp.status_code}")
+        
+        # MemberB PUT Proj A - should be 200
+        resp = requests.put(
+            f"{BASE_URL}/ins/{self.ins_id}/projects/{self.projA_id}",
+            headers={"Authorization": f"Bearer {self.memberB_token}"},
+            json={"status": "active"}
+        )
+        self.log("6.4b", "MemberB PUT Proj A - ALLOWED", resp.status_code == 200, f"Status: {resp.status_code}")
+        
+        # MemberB GET Proj B - should be 403
+        resp = requests.get(
+            f"{BASE_URL}/ins/{self.ins_id}/projects/{self.projB_id}",
+            headers={"Authorization": f"Bearer {self.memberB_token}"}
+        )
+        self.log("6.4c", "MemberB GET Proj B - UNAUTHORIZED (403)", resp.status_code == 403, f"Status: {resp.status_code}")
+        
+        # MemberB PUT Proj B - should be 403
+        resp = requests.put(
+            f"{BASE_URL}/ins/{self.ins_id}/projects/{self.projB_id}",
+            headers={"Authorization": f"Bearer {self.memberB_token}"},
+            json={"status": "active"}
+        )
+        self.log("6.4d", "MemberB PUT Proj B - UNAUTHORIZED (403)", resp.status_code == 403, f"Status: {resp.status_code}")
+        
+        # MemberB POST new project - should be 403 (project scope cannot create)
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/projects",
+            headers={"Authorization": f"Bearer {self.memberB_token}"},
+            json={"name": "NewProj", "department_id": self.deptA_id}
+        )
+        self.log("6.4e", "MemberB POST new project - UNAUTHORIZED (403, project scope cannot create)", resp.status_code == 403, f"Status: {resp.status_code}")
+    
+    def test_7_persistence(self):
+        """Test 7: PERSISTENCE"""
+        print("\n=== TEST 7: PERSISTENCE ===")
+        
+        # Re-fetch departments
+        resp = requests.get(
+            f"{BASE_URL}/ins/{self.ins_id}/departments",
+            headers={"Authorization": f"Bearer {self.owner_token}"}
+        )
+        if resp.status_code == 200:
+            depts = resp.json()["departments"]
+            has_names = all(d.get("name") for d in depts)
+            has_members = "members" in depts[0] if depts else False
+            self.log("7.1", "Re-fetch departments - data persists with correct fields", True, 
+                    f"Status: {resp.status_code}, Count: {len(depts)}, Has names: {has_names}, Has members: {has_members}")
+        else:
+            self.log("7.1", "Re-fetch departments - data persists with correct fields", False, f"Status: {resp.status_code}, Response: {resp.text}")
+        
+        # Re-fetch projects
+        resp = requests.get(
+            f"{BASE_URL}/ins/{self.ins_id}/projects",
+            headers={"Authorization": f"Bearer {self.owner_token}"}
+        )
+        if resp.status_code == 200:
+            projects = resp.json()["projects"]
+            has_names = all(p.get("name") for p in projects)
+            has_dept_name = any(p.get("department_name") for p in projects if p.get("department_id"))
+            has_assignees = "assignees" in projects[0] if projects else False
+            has_status = all(p.get("status") for p in projects)
+            self.log("7.2", "Re-fetch projects - data persists with correct fields", True, 
+                    f"Status: {resp.status_code}, Count: {len(projects)}, Has names: {has_names}, Has dept_name: {has_dept_name}, Has assignees: {has_assignees}, Has status: {has_status}")
+        else:
+            self.log("7.2", "Re-fetch projects - data persists with correct fields", False, f"Status: {resp.status_code}, Response: {resp.text}")
+    
+    def test_8_phase_a_regression(self):
+        """Test 8: PHASE A REGRESSION (brief)"""
+        print("\n=== TEST 8: PHASE A REGRESSION ===")
+        
+        # Owner (institution scope / '*') can GET Proj B
+        resp = requests.get(
+            f"{BASE_URL}/ins/{self.ins_id}/projects/{self.projB_id}",
+            headers={"Authorization": f"Bearer {self.owner_token}"}
+        )
+        self.log("8.1", "Owner can GET Proj B (institution scope)", resp.status_code == 200, f"Status: {resp.status_code}")
+        
+        # Owner can GET Dept B
+        resp = requests.get(
+            f"{BASE_URL}/ins/{self.ins_id}/departments/{self.deptB_id}",
+            headers={"Authorization": f"Bearer {self.owner_token}"}
+        )
+        self.log("8.2", "Owner can GET Dept B (institution scope)", resp.status_code == 200, f"Status: {resp.status_code}")
+        
+        # Owner can create departments
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/departments",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={"name": "Dept C", "kind": "department"}
+        )
+        self.log("8.3", "Owner can create departments", resp.status_code == 200, f"Status: {resp.status_code}")
+        
+        # Create a new member with NO roles
+        import random
+        rand = random.randint(10000, 99999)
+        memberC_data = self.register_user(
+            f"memberC{rand}@test.com",
+            "password123",
+            "Member C"
+        )
+        memberC_token = memberC_data["token"]
+        memberC_identity_code = memberC_data["identity_code"]
+        
+        # Add memberC to institution
+        resp = requests.post(
+            f"{BASE_URL}/ins/{self.ins_id}/members",
+            headers={"Authorization": f"Bearer {self.owner_token}"},
+            json={"identity_code": memberC_identity_code}
+        )
+        if resp.status_code != 200:
+            self.log("8.4", "Member with NO roles - setup failed", False, f"Failed to add memberC: {resp.status_code}")
+        else:
+            # MemberC (no roles) tries to POST project - should be 403
+            resp = requests.post(
+                f"{BASE_URL}/ins/{self.ins_id}/projects",
+                headers={"Authorization": f"Bearer {memberC_token}"},
+                json={"name": "Unauthorized Project", "department_id": self.deptA_id}
+            )
+            self.log("8.4a", "Member with NO roles gets 403 on POST projects", resp.status_code == 403, f"Status: {resp.status_code}")
+            
+            # MemberC (no roles) tries to POST department - should be 403
+            resp = requests.post(
+                f"{BASE_URL}/ins/{self.ins_id}/departments",
+                headers={"Authorization": f"Bearer {memberC_token}"},
+                json={"name": "Unauthorized Dept", "kind": "department"}
+            )
+            self.log("8.4b", "Member with NO roles gets 403 on POST departments", resp.status_code == 403, f"Status: {resp.status_code}")
+            
+            # MemberC (no roles) can GET departments list - should be 200
+            resp = requests.get(
+                f"{BASE_URL}/ins/{self.ins_id}/departments",
+                headers={"Authorization": f"Bearer {memberC_token}"}
+            )
+            self.log("8.4c", "Member with NO roles gets 200 on GET departments (list allowed)", resp.status_code == 200, f"Status: {resp.status_code}")
+            
+            # MemberC (no roles) can GET projects list - should be 200
+            resp = requests.get(
+                f"{BASE_URL}/ins/{self.ins_id}/projects",
+                headers={"Authorization": f"Bearer {memberC_token}"}
+            )
+            self.log("8.4d", "Member with NO roles gets 200 on GET projects (list allowed)", resp.status_code == 200, f"Status: {resp.status_code}")
+    
+    def print_summary(self):
+        """Print test summary"""
+        print("\n" + "="*80)
+        print("TEST SUMMARY")
+        print("="*80)
+        
+        passed = sum(1 for r in self.results if "✅" in r["status"])
+        failed = sum(1 for r in self.results if "❌" in r["status"])
+        total = len(self.results)
+        
+        print(f"\nTotal Tests: {total}")
+        print(f"Passed: {passed}")
+        print(f"Failed: {failed}")
+        print(f"Success Rate: {(passed/total*100):.1f}%\n")
+        
+        if failed > 0:
+            print("FAILED TESTS:")
+            for r in self.results:
+                if "❌" in r["status"]:
+                    print(f"  {r['test']}: {r['description']}")
+                    if r["details"]:
+                        print(f"    {r['details']}")
+        
+        print("\n" + "="*80)
+    
+    def run_all_tests(self):
+        """Run all tests"""
+        try:
+            self.setup_fixture()
+            self.test_1_department_creation()
+            self.test_2_department_membership()
+            self.test_3_project_creation()
+            self.test_4_project_assignment()
+            self.test_5_scoped_authorization()
+            self.test_6_project_scoped_role()
+            self.test_7_persistence()
+            self.test_8_phase_a_regression()
+            self.print_summary()
+        except Exception as e:
+            print(f"\n❌ CRITICAL ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            self.print_summary()
 
 if __name__ == "__main__":
-    main()
+    runner = TestRunner()
+    runner.run_all_tests()

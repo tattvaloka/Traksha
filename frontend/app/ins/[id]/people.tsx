@@ -24,11 +24,17 @@ export default function InstitutionPeople() {
   const { show } = useToast();
   const [code, setCode] = useState("");
   const [assignFor, setAssignFor] = useState<any>(null); // member being assigned a role
+  const [pickedRole, setPickedRole] = useState<any>(null);
+  const [scopeSel, setScopeSel] = useState<any>({ type: "institution", ref: null, label: null });
+
+  const closeAssign = () => { setAssignFor(null); setPickedRole(null); setScopeSel({ type: "institution", ref: null, label: null }); };
 
   const insQ = useQuery({ queryKey: ["ins", id], queryFn: () => api.get(`/ins/${id}`), enabled: !!id });
   const perms: string[] = insQ.data?.institution?.my_permissions ?? [];
   const membersQ = useQuery({ queryKey: ["ins", id, "members"], queryFn: () => api.get(`/ins/${id}/members`), enabled: !!id });
   const rolesQ = useQuery({ queryKey: ["ins", id, "roles"], queryFn: () => api.get(`/ins/${id}/roles`), enabled: !!id && !!assignFor });
+  const deptsQ = useQuery({ queryKey: ["ins", id, "departments"], queryFn: () => api.get(`/ins/${id}/departments`), enabled: !!id && !!assignFor });
+  const projsQ = useQuery({ queryKey: ["ins", id, "projects"], queryFn: () => api.get(`/ins/${id}/projects`), enabled: !!id && !!assignFor });
 
   const canInvite = insCan(perms, "members:invite");
   const canRemove = insCan(perms, "members:remove");
@@ -45,8 +51,8 @@ export default function InstitutionPeople() {
     onError: (e: any) => show(e instanceof ApiError ? e.message : "Could not remove", "error"),
   });
   const assign = useMutation({
-    mutationFn: ({ memberId, roleId }: any) => api.post(`/ins/${id}/members/${memberId}/roles`, { role_id: roleId }),
-    onSuccess: () => { setAssignFor(null); queryClient.invalidateQueries({ queryKey: ["ins", id, "members"] }); queryClient.invalidateQueries({ queryKey: ["ins", id, "approvals"] }); show("Role nominated — pending approval", "success"); },
+    mutationFn: ({ memberId, roleId, scope }: any) => api.post(`/ins/${id}/members/${memberId}/roles`, { role_id: roleId, scope }),
+    onSuccess: () => { closeAssign(); queryClient.invalidateQueries({ queryKey: ["ins", id, "members"] }); queryClient.invalidateQueries({ queryKey: ["ins", id, "approvals"] }); show("Role nominated — pending approval", "success"); },
     onError: (e: any) => show(e instanceof ApiError ? e.message : "Could not assign role", "error"),
   });
   const revoke = useMutation({
@@ -100,7 +106,10 @@ export default function InstitutionPeople() {
                       {m.roles.map((r: any) => (
                         <View key={r.assignment_id} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                           <Ionicons name={r.state === "active" ? "ribbon" : "time-outline"} size={15} color={r.state === "active" ? colors.trkText : colors.warning} />
-                          <T variant="bodySm" color={colors.textPrimary} style={{ flex: 1 }}>{r.role_name}</T>
+                          <View style={{ flex: 1 }}>
+                            <T variant="bodySm" color={colors.textPrimary}>{r.role_name}</T>
+                            <T variant="caption" color={colors.muted}>scope: {r.scope?.type || "institution"}{r.scope?.label ? ` · ${r.scope.label}` : ""}</T>
+                          </View>
                           <T variant="caption" color={r.state === "active" ? colors.success : colors.warning}>{STATE_LABEL[r.state] || r.state}</T>
                           {canAssign ? (
                             <Pressable hitSlop={8} onPress={() => revoke.mutate({ memberId: m.id, assignmentId: r.assignment_id })} testID={`ins-revoke-${r.assignment_id}`}>
@@ -125,27 +134,70 @@ export default function InstitutionPeople() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* Assign-role picker */}
-      <Modal visible={!!assignFor} transparent animationType="fade" onRequestClose={() => setAssignFor(null)}>
-        <Pressable style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "flex-end" }} onPress={() => setAssignFor(null)}>
-          <Pressable style={{ backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: space.lg, gap: 12, maxHeight: "70%" }} onPress={() => {}}>
-            <T variant="subtitle">Assign a role to {assignFor?.user?.display_name}</T>
-            <T variant="bodySm" color={colors.textSecondary}>The assignment stays pending until approved.</T>
-            {rolesQ.isLoading ? <Loader /> : (
-              <ScrollView style={{ maxHeight: 340 }} contentContainerStyle={{ gap: 8 }}>
-                {(rolesQ.data?.roles ?? []).length === 0 ? (
-                  <T variant="bodySm" color={colors.muted}>No roles defined yet. Create one under Roles & permissions.</T>
-                ) : (
-                  (rolesQ.data?.roles ?? []).map((role: any) => (
-                    <Card key={role.id} onPress={() => assign.mutate({ memberId: assignFor.id, roleId: role.id })} testID={`ins-pick-role-${role.id}`} style={{ gap: 4 }}>
-                      <T variant="label">{role.name}</T>
-                      <T variant="caption" color={colors.muted}>{(role.permissions || []).length} permission(s) · scope: {role.scope?.type || "institution"}</T>
-                    </Card>
-                  ))
+      {/* Assign-role picker: choose role, then scope, then confirm */}
+      <Modal visible={!!assignFor} transparent animationType="fade" onRequestClose={closeAssign}>
+        <Pressable style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "flex-end" }} onPress={closeAssign}>
+          <Pressable style={{ backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: space.lg, gap: 12, maxHeight: "80%" }} onPress={() => {}}>
+            {!pickedRole ? (
+              <>
+                <T variant="subtitle">Assign a role to {assignFor?.user?.display_name}</T>
+                <T variant="bodySm" color={colors.textSecondary}>Step 1 of 2 — choose a role.</T>
+                {rolesQ.isLoading ? <Loader /> : (
+                  <ScrollView style={{ maxHeight: 380 }} contentContainerStyle={{ gap: 8 }}>
+                    {(rolesQ.data?.roles ?? []).length === 0 ? (
+                      <T variant="bodySm" color={colors.muted}>No roles defined yet. Create one under Roles & permissions.</T>
+                    ) : (
+                      (rolesQ.data?.roles ?? []).map((role: any) => (
+                        <Card key={role.id} onPress={() => { setPickedRole(role); setScopeSel(role.scope || { type: "institution", ref: null, label: null }); }} testID={`ins-pick-role-${role.id}`} style={{ gap: 4 }}>
+                          <T variant="label">{role.name}</T>
+                          <T variant="caption" color={colors.muted}>{(role.permissions || []).length} permission(s) · default scope: {role.scope?.type || "institution"}</T>
+                        </Card>
+                      ))
+                    )}
+                  </ScrollView>
                 )}
-              </ScrollView>
+                <Button label="Cancel" variant="ghost" onPress={closeAssign} />
+              </>
+            ) : (
+              <>
+                <T variant="subtitle">Scope for {pickedRole.name}</T>
+                <T variant="bodySm" color={colors.textSecondary}>Step 2 of 2 — where does this role&apos;s authority apply?</T>
+                <ScrollView style={{ maxHeight: 400 }} contentContainerStyle={{ gap: 12 }}>
+                  <Pressable onPress={() => setScopeSel({ type: "institution", ref: null, label: null })} testID="assign-scope-institution" style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                    <Ionicons name={scopeSel.type === "institution" ? "radio-button-on" : "radio-button-off"} size={20} color={scopeSel.type === "institution" ? colors.brand : colors.muted} />
+                    <T variant="body">Institution-wide</T>
+                  </Pressable>
+
+                  {(deptsQ.data?.departments ?? []).length > 0 ? <T variant="mono" color={colors.textSecondary}>DEPARTMENTS & TEAMS</T> : null}
+                  {(deptsQ.data?.departments ?? []).map((d: any) => {
+                    const on = scopeSel.type === "department" && scopeSel.ref === d.id;
+                    return (
+                      <Pressable key={d.id} onPress={() => setScopeSel({ type: "department", ref: d.id, label: d.name })} testID={`assign-scope-dept-${d.id}`} style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                        <Ionicons name={on ? "radio-button-on" : "radio-button-off"} size={20} color={on ? colors.brand : colors.muted} />
+                        <T variant="body">{d.name}</T>
+                      </Pressable>
+                    );
+                  })}
+
+                  {(projsQ.data?.projects ?? []).length > 0 ? <T variant="mono" color={colors.textSecondary}>PROJECTS</T> : null}
+                  {(projsQ.data?.projects ?? []).map((p: any) => {
+                    const on = scopeSel.type === "project" && scopeSel.ref === p.id;
+                    return (
+                      <Pressable key={p.id} onPress={() => setScopeSel({ type: "project", ref: p.id, label: p.name })} testID={`assign-scope-proj-${p.id}`} style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                        <Ionicons name={on ? "radio-button-on" : "radio-button-off"} size={20} color={on ? colors.brand : colors.muted} />
+                        <T variant="body">{p.name}</T>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+                <View style={{ flexDirection: "row", gap: 10 }}>
+                  <Button label="Back" variant="ghost" onPress={() => setPickedRole(null)} full={false} />
+                  <View style={{ flex: 1 }}>
+                    <Button label="Nominate" onPress={() => assign.mutate({ memberId: assignFor.id, roleId: pickedRole.id, scope: scopeSel })} loading={assign.isPending} testID="assign-confirm" />
+                  </View>
+                </View>
+              </>
             )}
-            <Button label="Cancel" variant="ghost" onPress={() => setAssignFor(null)} />
           </Pressable>
         </Pressable>
       </Modal>

@@ -115,6 +115,8 @@ export default function InstitutionDetail() {
           {isApproved ? (
             <View style={{ gap: 10 }}>
               <NavCard icon="people-outline" title="People" subtitle="Members associated with this institution" onPress={() => router.push(`/ins/${id}/people`)} colors={colors} testID="ins-nav-people" />
+              <NavCard icon="git-branch-outline" title="Departments & Teams" subtitle="Organise people and scope authority" onPress={() => router.push(`/ins/${id}/departments`)} colors={colors} testID="ins-nav-departments" />
+              <NavCard icon="briefcase-outline" title="Projects" subtitle="Projects, status and assignments" onPress={() => router.push(`/ins/${id}/projects`)} colors={colors} testID="ins-nav-projects" />
               <NavCard icon="ribbon-outline" title="Roles & permissions" subtitle="Custom roles, permissions and scope" onPress={() => router.push(`/ins/${id}/roles`)} colors={colors} testID="ins-nav-roles" />
               {insCan(perms, "approvals:manage") ? (
                 <NavCard icon="checkmark-done-outline" title="Approvals" subtitle="Review pending role assignments" onPress={() => router.push(`/ins/${id}/approvals`)} colors={colors} testID="ins-nav-approvals" />

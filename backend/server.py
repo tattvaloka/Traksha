@@ -160,6 +160,8 @@ async def ensure_indexes():
     await db.ins_roles.create_index("ins_id")
     await db.ins_approvals.create_index([("ins_id", 1), ("kind", 1), ("state", 1)])
     await db.ins_permissions.create_index("key", unique=True)
+    await db.ins_departments.create_index("ins_id")
+    await db.ins_projects.create_index("ins_id")
 
 
 SEED_CONTRIBUTIONS = [
@@ -229,6 +231,18 @@ PERMISSION_CATALOG = [
     {"key": "approvals:manage", "resource": "approvals", "action": "manage",
      "label": "Approve assignments", "category": "Approvals",
      "description": "Approve or reject role assignments and nominations."},
+    {"key": "departments:view", "resource": "departments", "action": "view",
+     "label": "View departments & teams", "category": "Departments & Teams",
+     "description": "View departments and teams within your scope."},
+    {"key": "departments:manage", "resource": "departments", "action": "manage",
+     "label": "Manage departments & teams", "category": "Departments & Teams",
+     "description": "Create, edit, archive and staff departments/teams within your scope."},
+    {"key": "projects:view", "resource": "projects", "action": "view",
+     "label": "View projects", "category": "Projects",
+     "description": "View projects within your scope."},
+    {"key": "projects:manage", "resource": "projects", "action": "manage",
+     "label": "Manage projects", "category": "Projects",
+     "description": "Create, edit, archive and assign people to projects within your scope."},
     {"key": "communication:post", "resource": "communication", "action": "post",
      "label": "Institutional communication", "category": "Communication",
      "description": "Speak officially on behalf of the institution (Phase B)."},
@@ -1663,7 +1677,8 @@ async def simulate_transition(u: dict = Depends(require_user)):
 # ===========================================================================
 async def resolve_authority(user_id: str, ins_id: str) -> Optional[dict]:
     """Compute a person's authority within an institution: ownership +
-    aggregated permissions from *active* role assignments (+ scopes)."""
+    aggregated permissions from *active* role assignments. Each grant keeps its
+    scope so access can be enforced against real resources (Phase B.1)."""
     ins = await db.institutions.find_one({"_id": ins_id, "deleted_at": None})
     if not ins:
         return None
@@ -1671,25 +1686,33 @@ async def resolve_authority(user_id: str, ins_id: str) -> Optional[dict]:
         {"ins_id": ins_id, "user_id": user_id, "status": "active"})
     is_owner = ins.get("owner_user_id") == user_id
     perms: Set[str] = set()
-    scopes: List[dict] = []
+    grants: List[dict] = []
     relationship = None
     if is_owner:
-        # Ownership is authority in itself; it is NOT a role.
+        # Ownership is authority in itself; it is NOT a role. Institution-wide.
         perms = {"*"}
         relationship = "owner"
+        grants.append({"perms": {"*"}, "scope": {"type": "institution"}})
     elif member:
         relationship = member.get("relationship")
-        active_role_ids = [r["role_id"] for r in member.get("roles", [])
-                           if r.get("state") == "active"]
-        if active_role_ids:
+        active = [r for r in member.get("roles", []) if r.get("state") == "active"]
+        if active:
+            role_ids = list({r["role_id"] for r in active})
+            roles: Dict[str, dict] = {}
             async for role in db.ins_roles.find(
-                    {"_id": {"$in": active_role_ids}, "ins_id": ins_id}):
-                for p in role.get("permissions", []):
-                    perms.add(p)
-                if role.get("scope"):
-                    scopes.append(role["scope"])
+                    {"_id": {"$in": role_ids}, "ins_id": ins_id}):
+                roles[role["_id"]] = role
+            for r in active:
+                role = roles.get(r["role_id"])
+                if not role:
+                    continue
+                rperms = set(role.get("permissions", []))
+                perms |= rperms
+                # Assignment-level scope overrides the role default when present.
+                scope = r.get("scope") or role.get("scope") or {"type": "institution"}
+                grants.append({"perms": rperms, "scope": scope})
     return {"ins": ins, "member": member, "is_owner": is_owner,
-            "relationship": relationship, "perms": perms, "scopes": scopes}
+            "relationship": relationship, "perms": perms, "grants": grants}
 
 
 def authority_can(authority: Optional[dict], key: str) -> bool:
@@ -1699,6 +1722,49 @@ def authority_can(authority: Optional[dict], key: str) -> bool:
     if "*" in perms or key in perms:
         return True
     return f"{key.split(':')[0]}:*" in perms
+
+
+def _perm_in(perms: Set[str], key: str) -> bool:
+    return "*" in perms or key in perms or f"{key.split(':')[0]}:*" in perms
+
+
+def scope_covers(grant_scope: dict, target: dict) -> bool:
+    """Does a grant's scope cover the resource being acted on?
+    target: {type: institution|department|project|resource, ref?, department?}"""
+    t = (grant_scope or {}).get("type", "institution")
+    if t == "institution":
+        return True
+    ref = (grant_scope or {}).get("ref")
+    if not ref:
+        # A scoped grant with no concrete ref cannot cover a real resource.
+        return False
+    if t == "department":
+        # covers the department itself, its teams, and projects within it
+        return (target.get("type") == "department" and target.get("ref") == ref) \
+            or (target.get("department") == ref)
+    if t == "project":
+        return target.get("type") == "project" and target.get("ref") == ref
+    if t == "resource":
+        return target.get("ref") == ref
+    return False
+
+
+def authority_can_scoped(authority: Optional[dict], key: str, target: dict) -> bool:
+    if not authority:
+        return False
+    for g in authority.get("grants", []):
+        if _perm_in(g.get("perms", set()), key) and scope_covers(g.get("scope", {}), target):
+            return True
+    return False
+
+
+async def require_scoped_perm(user: dict, ins_id: str, key: str, target: dict) -> dict:
+    a = await require_authority(user, ins_id)
+    if a["ins"].get("status") != "approved":
+        raise HTTPException(400, "Institution is not active")
+    if not authority_can_scoped(a, key, target):
+        raise HTTPException(403, "You do not have permission for this resource/scope")
+    return a
 
 
 async def require_authority(user: dict, ins_id: str) -> dict:
@@ -1736,6 +1802,17 @@ def validate_scope(scope: "INSRoleScope") -> dict:
     if scope.type not in SCOPE_TYPES:
         raise HTTPException(400, f"Unknown scope type: {scope.type}")
     return {"type": scope.type, "ref": scope.ref, "label": scope.label}
+
+
+async def validate_scope_ref(ins_id: str, scope: dict):
+    """Ensure a scoped grant points at a real department/project in this INS."""
+    t = scope.get("type")
+    ref = scope.get("ref")
+    if t in ("department", "project") and ref:
+        coll = db.ins_departments if t == "department" else db.ins_projects
+        exists = await coll.find_one({"_id": ref, "ins_id": ins_id})
+        if not exists:
+            raise HTTPException(400, f"Scope target ({t}) does not exist")
 
 
 # --- serializers -----------------------------------------------------------
@@ -1850,6 +1927,7 @@ class INSRoleIn(BaseModel):
 
 class INSRoleAssignIn(BaseModel):
     role_id: str
+    scope: Optional[INSRoleScope] = None
 
 
 class INSRejectIn(BaseModel):
@@ -2145,12 +2223,18 @@ async def ins_assign_role(ins_id: str, member_id: str, body: INSRoleAssignIn,
     for r in m.get("roles", []):
         if r["role_id"] == role["_id"] and r["state"] in ("pending_approval", "active"):
             raise HTTPException(409, "This role is already assigned or pending approval")
+    # Assignment scope: explicit override, else the role's default scope.
+    if body.scope is not None:
+        eff_scope = validate_scope(body.scope)
+        await validate_scope_ref(ins_id, eff_scope)
+    else:
+        eff_scope = role.get("scope") or {"type": "institution"}
     now = now_utc()
     assignment_id = new_id()
     assignment = {
         "assignment_id": assignment_id, "role_id": role["_id"],
         "role_name": role["name"], "state": "pending_approval",
-        "scope": role.get("scope"), "nominated_by": u["_id"],
+        "scope": eff_scope, "nominated_by": u["_id"],
         "decided_by": None, "created_at": now, "decided_at": None,
     }
     await db.ins_members.update_one(
@@ -2250,6 +2334,284 @@ async def ins_approval_reject(ins_id: str, approval_id: str, body: INSRejectIn,
         {"_id": approval_id},
         {"$set": {"state": "rejected", "decided_by": u["_id"],
                   "decided_at": now, "reason": body.reason}})
+    return {"ok": True}
+
+
+# ===========================================================================
+# INS PHASE B.1: DEPARTMENTS / TEAMS + PROJECTS (real scoped resources)
+# ===========================================================================
+class INSDeptIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    description: Optional[str] = Field(default=None, max_length=500)
+    kind: str = "department"  # "department" | "team"
+
+
+class INSDeptMemberIn(BaseModel):
+    user_id: str
+
+
+class INSProjectIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: Optional[str] = Field(default=None, max_length=1000)
+    status: str = "active"  # active | on_hold | completed | archived
+    department_id: Optional[str] = None
+
+
+class INSProjectUpdateIn(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=100)
+    description: Optional[str] = Field(default=None, max_length=1000)
+    status: Optional[str] = None
+    department_id: Optional[str] = None
+
+
+class INSAssigneeIn(BaseModel):
+    user_id: str
+
+
+DEPT_KINDS = ["department", "team"]
+PROJECT_STATUSES = ["active", "on_hold", "completed", "archived"]
+
+
+async def _users_public_map(user_ids: List[str]) -> Dict[str, dict]:
+    out: Dict[str, dict] = {}
+    ids = list({uid for uid in user_ids if uid})
+    if not ids:
+        return out
+    async for usr in db.users.find({"_id": {"$in": ids}}):
+        out[usr["_id"]] = public_profile(usr)
+    return out
+
+
+async def _require_active_ins_member(ins_id: str, user_id: str):
+    m = await db.ins_members.find_one(
+        {"ins_id": ins_id, "user_id": user_id, "status": "active"})
+    if not m:
+        raise HTTPException(404, "That person is not an active member of the institution")
+    return m
+
+
+def serialize_department(d: dict, umap: Dict[str, dict]) -> dict:
+    member_ids = d.get("member_ids", [])
+    return {
+        "id": d["_id"], "name": d.get("name"), "description": d.get("description"),
+        "kind": d.get("kind", "department"), "status": d.get("status", "active"),
+        "member_ids": member_ids,
+        "members": [umap[uid] for uid in member_ids if uid in umap],
+        "member_count": len(member_ids),
+        "created_at": iso(d.get("created_at")),
+    }
+
+
+def serialize_project(p: dict, umap: Dict[str, dict], dept: Optional[dict]) -> dict:
+    assignee_ids = p.get("assignee_ids", [])
+    return {
+        "id": p["_id"], "name": p.get("name"), "description": p.get("description"),
+        "status": p.get("status", "active"),
+        "department_id": p.get("department_id"),
+        "department_name": dept.get("name") if dept else None,
+        "assignee_ids": assignee_ids,
+        "assignees": [umap[uid] for uid in assignee_ids if uid in umap],
+        "assignee_count": len(assignee_ids),
+        "created_at": iso(p.get("created_at")),
+    }
+
+
+# --- departments & teams ----------------------------------------------------
+@api.get("/ins/{ins_id}/departments")
+async def ins_departments_list(ins_id: str, u: dict = Depends(require_user)):
+    await require_authority(u, ins_id)
+    depts = []
+    async for d in db.ins_departments.find({"ins_id": ins_id, "status": {"$ne": "archived"}}).sort("created_at", 1):
+        depts.append(d)
+    umap = await _users_public_map([uid for d in depts for uid in d.get("member_ids", [])])
+    return {"departments": [serialize_department(d, umap) for d in depts]}
+
+
+@api.post("/ins/{ins_id}/departments")
+async def ins_department_create(ins_id: str, body: INSDeptIn, u: dict = Depends(require_user)):
+    # Creating a department is an institution-wide action.
+    await require_scoped_perm(u, ins_id, "departments:manage", {"type": "institution"})
+    if body.kind not in DEPT_KINDS:
+        raise HTTPException(400, "kind must be 'department' or 'team'")
+    did = new_id()
+    doc = {
+        "_id": did, "id": did, "ins_id": ins_id, "name": body.name.strip(),
+        "description": body.description, "kind": body.kind, "status": "active",
+        "member_ids": [], "created_by": u["_id"], "created_at": now_utc(),
+        "archived_at": None,
+    }
+    await db.ins_departments.insert_one(doc)
+    return {"department": serialize_department(doc, {})}
+
+
+@api.get("/ins/{ins_id}/departments/{dept_id}")
+async def ins_department_detail(ins_id: str, dept_id: str, u: dict = Depends(require_user)):
+    await require_scoped_perm(u, ins_id, "departments:view", {"type": "department", "ref": dept_id})
+    d = await db.ins_departments.find_one({"_id": dept_id, "ins_id": ins_id})
+    if not d:
+        raise HTTPException(404, "Department not found")
+    umap = await _users_public_map(d.get("member_ids", []))
+    return {"department": serialize_department(d, umap)}
+
+
+@api.put("/ins/{ins_id}/departments/{dept_id}")
+async def ins_department_update(ins_id: str, dept_id: str, body: INSDeptIn, u: dict = Depends(require_user)):
+    await require_scoped_perm(u, ins_id, "departments:manage", {"type": "department", "ref": dept_id})
+    d = await db.ins_departments.find_one({"_id": dept_id, "ins_id": ins_id})
+    if not d:
+        raise HTTPException(404, "Department not found")
+    if body.kind not in DEPT_KINDS:
+        raise HTTPException(400, "kind must be 'department' or 'team'")
+    await db.ins_departments.update_one({"_id": dept_id}, {"$set": {
+        "name": body.name.strip(), "description": body.description, "kind": body.kind}})
+    fresh = await db.ins_departments.find_one({"_id": dept_id})
+    umap = await _users_public_map(fresh.get("member_ids", []))
+    return {"department": serialize_department(fresh, umap)}
+
+
+@api.post("/ins/{ins_id}/departments/{dept_id}/archive")
+async def ins_department_archive(ins_id: str, dept_id: str, u: dict = Depends(require_user)):
+    await require_scoped_perm(u, ins_id, "departments:manage", {"type": "department", "ref": dept_id})
+    res = await db.ins_departments.update_one(
+        {"_id": dept_id, "ins_id": ins_id},
+        {"$set": {"status": "archived", "archived_at": now_utc()}})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Department not found")
+    return {"ok": True}
+
+
+@api.post("/ins/{ins_id}/departments/{dept_id}/members")
+async def ins_department_add_member(ins_id: str, dept_id: str, body: INSDeptMemberIn, u: dict = Depends(require_user)):
+    await require_scoped_perm(u, ins_id, "departments:manage", {"type": "department", "ref": dept_id})
+    d = await db.ins_departments.find_one({"_id": dept_id, "ins_id": ins_id})
+    if not d:
+        raise HTTPException(404, "Department not found")
+    await _require_active_ins_member(ins_id, body.user_id)
+    await db.ins_departments.update_one({"_id": dept_id}, {"$addToSet": {"member_ids": body.user_id}})
+    fresh = await db.ins_departments.find_one({"_id": dept_id})
+    umap = await _users_public_map(fresh.get("member_ids", []))
+    return {"department": serialize_department(fresh, umap)}
+
+
+@api.delete("/ins/{ins_id}/departments/{dept_id}/members/{user_id}")
+async def ins_department_remove_member(ins_id: str, dept_id: str, user_id: str, u: dict = Depends(require_user)):
+    await require_scoped_perm(u, ins_id, "departments:manage", {"type": "department", "ref": dept_id})
+    res = await db.ins_departments.update_one(
+        {"_id": dept_id, "ins_id": ins_id}, {"$pull": {"member_ids": user_id}})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Department not found")
+    return {"ok": True}
+
+
+# --- projects ---------------------------------------------------------------
+@api.get("/ins/{ins_id}/projects")
+async def ins_projects_list(ins_id: str, u: dict = Depends(require_user)):
+    await require_authority(u, ins_id)
+    projs = []
+    async for p in db.ins_projects.find({"ins_id": ins_id, "status": {"$ne": "archived"}}).sort("created_at", -1):
+        projs.append(p)
+    umap = await _users_public_map([uid for p in projs for uid in p.get("assignee_ids", [])])
+    dept_ids = list({p.get("department_id") for p in projs if p.get("department_id")})
+    dmap: Dict[str, dict] = {}
+    if dept_ids:
+        async for d in db.ins_departments.find({"_id": {"$in": dept_ids}}):
+            dmap[d["_id"]] = d
+    return {"projects": [serialize_project(p, umap, dmap.get(p.get("department_id"))) for p in projs]}
+
+
+@api.post("/ins/{ins_id}/projects")
+async def ins_project_create(ins_id: str, body: INSProjectIn, u: dict = Depends(require_user)):
+    if body.status not in PROJECT_STATUSES:
+        raise HTTPException(400, "Invalid project status")
+    if body.department_id:
+        dept = await db.ins_departments.find_one({"_id": body.department_id, "ins_id": ins_id})
+        if not dept:
+            raise HTTPException(400, "department_id does not exist")
+    # Scope target carries the (optional) department so a department-scoped
+    # manager can create projects within their department.
+    await require_scoped_perm(u, ins_id, "projects:manage",
+                              {"type": "project", "department": body.department_id})
+    pid = new_id()
+    doc = {
+        "_id": pid, "id": pid, "ins_id": ins_id, "name": body.name.strip(),
+        "description": body.description, "status": body.status,
+        "department_id": body.department_id, "assignee_ids": [],
+        "created_by": u["_id"], "created_at": now_utc(), "archived_at": None,
+    }
+    await db.ins_projects.insert_one(doc)
+    dept = await db.ins_departments.find_one({"_id": body.department_id}) if body.department_id else None
+    return {"project": serialize_project(doc, {}, dept)}
+
+
+async def _project_target(p: dict) -> dict:
+    return {"type": "project", "ref": p["_id"], "department": p.get("department_id")}
+
+
+@api.get("/ins/{ins_id}/projects/{project_id}")
+async def ins_project_detail(ins_id: str, project_id: str, u: dict = Depends(require_user)):
+    p = await db.ins_projects.find_one({"_id": project_id, "ins_id": ins_id})
+    if not p:
+        raise HTTPException(404, "Project not found")
+    await require_scoped_perm(u, ins_id, "projects:view", await _project_target(p))
+    umap = await _users_public_map(p.get("assignee_ids", []))
+    dept = await db.ins_departments.find_one({"_id": p.get("department_id")}) if p.get("department_id") else None
+    return {"project": serialize_project(p, umap, dept)}
+
+
+@api.put("/ins/{ins_id}/projects/{project_id}")
+async def ins_project_update(ins_id: str, project_id: str, body: INSProjectUpdateIn, u: dict = Depends(require_user)):
+    p = await db.ins_projects.find_one({"_id": project_id, "ins_id": ins_id})
+    if not p:
+        raise HTTPException(404, "Project not found")
+    await require_scoped_perm(u, ins_id, "projects:manage", await _project_target(p))
+    updates = {k: v for k, v in body.dict(exclude_unset=True).items() if v is not None}
+    if "status" in updates and updates["status"] not in PROJECT_STATUSES:
+        raise HTTPException(400, "Invalid project status")
+    if "department_id" in updates and updates["department_id"]:
+        dept = await db.ins_departments.find_one({"_id": updates["department_id"], "ins_id": ins_id})
+        if not dept:
+            raise HTTPException(400, "department_id does not exist")
+    if "name" in updates:
+        updates["name"] = updates["name"].strip()
+    if updates:
+        await db.ins_projects.update_one({"_id": project_id}, {"$set": updates})
+    fresh = await db.ins_projects.find_one({"_id": project_id})
+    umap = await _users_public_map(fresh.get("assignee_ids", []))
+    dept = await db.ins_departments.find_one({"_id": fresh.get("department_id")}) if fresh.get("department_id") else None
+    return {"project": serialize_project(fresh, umap, dept)}
+
+
+@api.post("/ins/{ins_id}/projects/{project_id}/archive")
+async def ins_project_archive(ins_id: str, project_id: str, u: dict = Depends(require_user)):
+    p = await db.ins_projects.find_one({"_id": project_id, "ins_id": ins_id})
+    if not p:
+        raise HTTPException(404, "Project not found")
+    await require_scoped_perm(u, ins_id, "projects:manage", await _project_target(p))
+    await db.ins_projects.update_one({"_id": project_id}, {"$set": {"status": "archived", "archived_at": now_utc()}})
+    return {"ok": True}
+
+
+@api.post("/ins/{ins_id}/projects/{project_id}/assignees")
+async def ins_project_add_assignee(ins_id: str, project_id: str, body: INSAssigneeIn, u: dict = Depends(require_user)):
+    p = await db.ins_projects.find_one({"_id": project_id, "ins_id": ins_id})
+    if not p:
+        raise HTTPException(404, "Project not found")
+    await require_scoped_perm(u, ins_id, "projects:manage", await _project_target(p))
+    await _require_active_ins_member(ins_id, body.user_id)
+    await db.ins_projects.update_one({"_id": project_id}, {"$addToSet": {"assignee_ids": body.user_id}})
+    fresh = await db.ins_projects.find_one({"_id": project_id})
+    umap = await _users_public_map(fresh.get("assignee_ids", []))
+    dept = await db.ins_departments.find_one({"_id": fresh.get("department_id")}) if fresh.get("department_id") else None
+    return {"project": serialize_project(fresh, umap, dept)}
+
+
+@api.delete("/ins/{ins_id}/projects/{project_id}/assignees/{user_id}")
+async def ins_project_remove_assignee(ins_id: str, project_id: str, user_id: str, u: dict = Depends(require_user)):
+    p = await db.ins_projects.find_one({"_id": project_id, "ins_id": ins_id})
+    if not p:
+        raise HTTPException(404, "Project not found")
+    await require_scoped_perm(u, ins_id, "projects:manage", await _project_target(p))
+    await db.ins_projects.update_one({"_id": project_id}, {"$pull": {"assignee_ids": user_id}})
     return {"ok": True}
 
 
