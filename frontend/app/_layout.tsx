@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { View, ActivityIndicator, LogBox, Platform } from "react-native";
 import { Stack, useRouter, useSegments, useRootNavigationState } from "expo-router";
 import { useFonts } from "expo-font";
@@ -7,6 +7,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { StatusBar } from "expo-status-bar";
 import { QueryClientProvider } from "@tanstack/react-query";
+import { enableScreens } from "react-native-screens";
 
 import { ErrorBoundary } from "@/src/components/error-boundary";
 import { queryClient } from "@/src/query-client";
@@ -17,6 +18,12 @@ import { IncomingCallOverlay } from "@/src/components/IncomingCallOverlay";
 import { themes } from "@/src/theme";
 
 LogBox.ignoreAllLogs(true);
+
+// On web, native screen containers (react-native-screens) can leave nested
+// stack screens mounted-but-unpainted. Fall back to plain views on web only.
+if (Platform.OS === "web") {
+  enableScreens(false);
+}
 
 function Splash() {
   return (
@@ -57,11 +64,25 @@ function RootNavigator() {
 }
 
 export default function RootLayout() {
-  const [loaded] = useFonts({
+  // Load brand fonts, but never block the whole app on them: on web the font
+  // asset request can intermittently stall, which previously left the app stuck
+  // on the splash spinner. Text falls back to the system font until they load.
+  const [loaded, error] = useFonts({
     Newsreader: require("../assets/fonts/Newsreader-Regular.ttf"),
     PlusJakartaSans: require("../assets/fonts/PlusJakartaSans.ttf"),
     JetBrainsMono: require("../assets/fonts/JetBrainsMono.ttf"),
   });
+
+  // Give fonts a brief window on native for a clean first paint; on web (and on
+  // any font error) render immediately so we can never hang on the splash.
+  const [fontTimeout, setFontTimeout] = useState(Platform.OS === "web");
+  useEffect(() => {
+    if (loaded || error) return;
+    const t = setTimeout(() => setFontTimeout(true), 1500);
+    return () => clearTimeout(t);
+  }, [loaded, error]);
+
+  const canRender = loaded || !!error || fontTimeout;
 
   return (
     <ErrorBoundary>
@@ -73,7 +94,7 @@ export default function RootLayout() {
                 <AuthProvider>
                   <RealtimeProvider>
                     <StatusBar style="dark" />
-                    {loaded ? <RootNavigator /> : <Splash />}
+                    {canRender ? <RootNavigator /> : <Splash />}
                   </RealtimeProvider>
                 </AuthProvider>
               </ToastProvider>

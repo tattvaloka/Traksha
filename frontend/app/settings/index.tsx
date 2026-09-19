@@ -29,20 +29,15 @@ export default function Settings() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surface }}>
-      <StackHeader title="Settings" />
+      <StackHeader title="Preferences" />
       <ScrollView contentContainerStyle={{ padding: 16, gap: space.md, paddingBottom: 32 }}>
         <Card style={{ padding: 0, overflow: "hidden" }}>
           <Row icon="person-outline" label="Account" onPress={() => router.push("/settings/account")} testID="set-account" />
           <Row icon="finger-print-outline" label="Identity" onPress={() => router.push("/settings/identity")} testID="set-identity" />
           <Row icon="shield-outline" label="Privacy" onPress={() => router.push("/settings/privacy")} testID="set-privacy" />
           <Row icon="alert-circle-outline" label="Safety" onPress={() => router.push("/settings/safety")} testID="set-safety" />
-          <Row icon="call-outline" label="Communication" onPress={() => router.push("/settings/communication")} testID="set-communication" last />
-        </Card>
-
-        <Card style={{ padding: 0, overflow: "hidden" }}>
-          <Row icon="notifications-outline" label="Notifications" onPress={() => router.push("/notifications")} testID="set-notifications" />
-          <Row icon="business-outline" label="Institutions (INS)" onPress={() => router.push("/ins")} testID="set-ins" />
-          <Row icon="information-circle-outline" label="About Traksha" onPress={() => router.push("/settings/about")} testID="set-about" last />
+          <Row icon="call-outline" label="Communication" onPress={() => router.push("/settings/communication")} testID="set-communication" />
+          <Row icon="mail-outline" label="Contact us" onPress={() => router.push("/settings/contact")} testID="set-contact" last />
         </Card>
 
         <Card style={{ padding: 0, overflow: "hidden" }}>

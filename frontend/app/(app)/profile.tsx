@@ -58,9 +58,9 @@ export default function Profile() {
                 <Divider />
               </>
             )}
-            <Row icon="finger-print-outline" label="Identity" onPress={() => router.push("/settings/identity")} testID="identity-row" />
+            <Row icon="information-circle-outline" label="About Traksha" onPress={() => router.push("/settings/about")} testID="about-row" />
             <Divider />
-            <Row icon="settings-outline" label="Settings" onPress={() => router.push("/settings")} testID="settings-row" />
+            <Row icon="options-outline" label="Preferences" onPress={() => router.push("/settings")} testID="preferences-row" />
           </Card>
         </View>
       </ScrollView>

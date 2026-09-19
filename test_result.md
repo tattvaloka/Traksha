@@ -101,3 +101,96 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## user_problem_statement: >
+  Restructure Profile → Preferences → Identity architecture (Traksha).
+  Profile = Edit Profile, My Connection QR, About Traksha, Preferences (no standalone Identity).
+  Preferences = Account, Identity, Privacy, Safety, Communication, Contact Us, Sign Out.
+  Identity screen must show visually distinct TMP (provisional) vs TRK (established) states,
+  lifecycle/history, "Register an Institution (INS)" (begins verification flow, not instant),
+  and Developer Tool (Simulate transition) at the bottom. Notifications must NOT be in Preferences.
+  Also restored missing .env and fixed web render/robustness (nav-ready guard, non-blocking fonts,
+  bootstrap timeout, asyncRoutes:false, expo SDK 57 version alignment).
+
+## frontend:
+##   - task: "Profile IA (remove standalone Identity; add About Traksha; rename Settings->Preferences)"
+##     implemented: true
+##     working: true
+##     file: "app/(app)/profile.tsx"
+##     stuck_count: 0
+##     priority: "high"
+##     needs_retesting: false
+##     status_history:
+##         -working: true
+##         -agent: "testing"
+##         -comment: "✓ PASS - Profile screen shows correct navigation: Edit profile, My connection QR, About Traksha, Preferences. NO standalone Identity item present. Architecture correct."
+##   - task: "Preferences screen (Account/Identity/Privacy/Safety/Communication/Contact Us/Sign Out; no Notifications/INS/About)"
+##     implemented: true
+##     working: true
+##     file: "app/settings/index.tsx"
+##     stuck_count: 0
+##     priority: "high"
+##     needs_retesting: false
+##     status_history:
+##         -working: true
+##         -agent: "testing"
+##         -comment: "✓ PASS - Preferences screen shows correct items: Account, Identity, Privacy, Safety, Communication, Contact us, Sign out. NO Notifications, NO About Traksha, NO Institutions. Architecture correct."
+##   - task: "Contact Us screen (email + phone actionable)"
+##     implemented: true
+##     working: true
+##     file: "app/settings/contact.tsx"
+##     status_history:
+##         -working: true
+##         -agent: "testing"
+##         -comment: "✓ PASS - Contact Us screen displays email (Write2us@tattvashila.org) and phone (+91 92446 22322). Both are actionable with proper testIDs."
+##   - task: "Identity screen TMP vs TRK distinct presentation + INS registration + dev tool at bottom"
+##     implemented: true
+##     working: false
+##     file: "app/settings/identity.tsx"
+##     priority: "high"
+##     needs_retesting: false
+##     status_history:
+##         -working: false
+##         -agent: "testing"
+##         -comment: "✗ PARTIAL - TMP state: Shows PROVISIONAL IDENTITY, TMP code, Identity history, Register INS button, Simulate transition button. Developer tool is correctly positioned BELOW Register INS. However, missing 'Day N of 45' lifecycle text display (only shows progress bar). TRK state: Shows ESTABLISHED IDENTITY, Established member, TRK code, Transition complete. Developer tool correctly removed. CRITICAL ISSUE: TRK presentation lacks strong visual distinction - missing colored status strip at top, shield icon not rendering visibly. TMP and TRK look too similar in visual hierarchy."
+##   - task: "Register an Institution (INS) intent/verification screen (no instant creation)"
+##     implemented: true
+##     working: false
+##     file: "app/settings/register-institution.tsx"
+##     status_history:
+##         -working: false
+##         -agent: "testing"
+##         -comment: "✗ PARTIAL - Screen shows title 'Register an Institution', has form fields (name, email, role), and submit button. However, missing prominent 'Not instant' indicator and 'verification' messaging that should be clearly visible to users. The verification flow concept is present but not sufficiently communicated in the UI."
+
+## metadata:
+##   created_by: "main_agent"
+##   version: "2.0"
+##   run_ui: true
+
+## test_plan:
+##   current_focus:
+##     - "Profile IA"
+##     - "Preferences screen"
+##     - "Identity screen TMP vs TRK distinct presentation + INS registration + dev tool at bottom"
+##   test_all: false
+##   test_priority: "high_first"
+
+## agent_communication:
+##     -agent: "main"
+##     -message: >
+##        Verify on WEB preview. Register a NEW account (becomes TMP) to see the provisional
+##        Identity presentation. Then use Identity -> Developer Tool -> Simulate transition to
+##        become TRK and confirm the established presentation is visibly stronger/distinct.
+##        Verify: Profile shows Edit Profile / My Connection QR / About Traksha / Preferences and
+##        NO standalone Identity; Preferences shows Account/Identity/Privacy/Safety/Communication/
+##        Contact Us/Sign Out and NO Notifications and NO About; Identity has Register an Institution
+##        (INS) which opens a verification screen (does NOT instantly create INS); Developer Tool is
+##        BELOW the INS registration. Report any screen that renders blank.
+##     -agent: "testing"
+##     -message: >
+##        Testing completed. PASSED: Profile IA (✓ correct navigation, NO standalone Identity), 
+##        Preferences screen (✓ correct items, NO Notifications/About/INS), Contact Us (✓ email/phone actionable).
+##        FAILED: Identity screen - TMP state missing visible 'Day N of 45' text (only progress bar shows). 
+##        TRK state lacks strong visual distinction - missing colored status strip, shield icon not prominent.
+##        TMP and TRK presentations look too similar. Register Institution screen missing prominent 
+##        'Not instant' and 'verification' messaging. Developer tool positioning is correct (below INS button).
+##        No blank screens detected. All core navigation and architecture requirements met.

@@ -45,24 +45,65 @@ type AuthState = {
 
 const AuthContext = createContext<AuthState | null>(null);
 
+// Resolve with `fallback` if the promise doesn't settle within `ms`. Used so a
+// stalled storage read or network call can never block app bootstrap.
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise<T>((resolve) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if (!done) {
+        done = true;
+        resolve(fallback);
+      }
+    }, ms);
+    p.then(
+      (v) => {
+        if (!done) {
+          done = true;
+          clearTimeout(timer);
+          resolve(v);
+        }
+      },
+      () => {
+        if (!done) {
+          done = true;
+          clearTimeout(timer);
+          resolve(fallback);
+        }
+      },
+    );
+  });
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [token, setToken] = useState<string | null>(null);
   const [user, setUserState] = useState<Me | null>(null);
 
   const bootstrap = useCallback(async () => {
-    const t = await storage.secureGet<string>(TOKEN_KEY, "");
-    if (t) {
-      setToken(t);
-      try {
-        const me = await api.get<Me>("/auth/me");
-        setUserState(me);
-      } catch {
-        await storage.secureRemove(TOKEN_KEY);
-        setToken(null);
+    try {
+      // Reading secure storage can stall on web (AsyncStorage/IndexedDB init);
+      // never let it block first paint — cap it and fall back to no token.
+      const t = await withTimeout(storage.secureGet<string>(TOKEN_KEY, ""), 2500, "");
+      if (t) {
+        setToken(t);
+        try {
+          const me = await withTimeout(api.get<Me>("/auth/me"), 6000, null);
+          if (me) setUserState(me);
+          else {
+            await storage.secureRemove(TOKEN_KEY).catch(() => {});
+            setToken(null);
+          }
+        } catch {
+          await storage.secureRemove(TOKEN_KEY).catch(() => {});
+          setToken(null);
+        }
       }
+    } catch {
+      // ignore — we always mark ready below
+    } finally {
+      setReady(true);
     }
-    setReady(true);
   }, []);
 
   useEffect(() => {
