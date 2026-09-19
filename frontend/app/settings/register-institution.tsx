@@ -2,9 +2,12 @@ import React, { useState } from "react";
 import { View, ScrollView, KeyboardAvoidingView, Platform } from "react-native";
 import { router } from "expo-router";
 import { Ionicons } from "@react-native-vector-icons/ionicons";
+import { useMutation } from "@tanstack/react-query";
 import { StackHeader } from "@/src/components/Header";
 import { T, Card, Button, Input, Divider } from "@/src/components/ui";
 import { useToast } from "@/src/components/Toast";
+import { api, ApiError } from "@/src/api/client";
+import { queryClient } from "@/src/query-client";
 import { useTheme, space } from "@/src/theme";
 
 // Registering an institution does NOT create an INS instantly. It begins a
@@ -17,18 +20,29 @@ export default function RegisterInstitution() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("");
-  const [submitting, setSubmitting] = useState(false);
 
   const canSubmit = name.trim().length > 1 && email.trim().length > 3 && role.trim().length > 1;
 
-  const submit = () => {
-    if (!canSubmit || submitting) return;
-    setSubmitting(true);
-    setTimeout(() => {
-      setSubmitting(false);
+  const register = useMutation({
+    mutationFn: () =>
+      api.post("/ins/register", {
+        name: name.trim(),
+        email: email.trim(),
+        applicant_role: role.trim(),
+      }),
+    onSuccess: (res: any) => {
+      queryClient.invalidateQueries({ queryKey: ["ins", "mine"] });
       show("Request received. Institutions are activated only after verification.", "success");
-      router.back();
-    }, 600);
+      const id = res?.institution?.id;
+      if (id) router.replace(`/ins/${id}`);
+      else router.replace("/ins");
+    },
+    onError: (e: any) => show(e instanceof ApiError ? e.message : "Could not submit request", "error"),
+  });
+
+  const submit = () => {
+    if (!canSubmit || register.isPending) return;
+    register.mutate();
   };
 
   return (
@@ -69,7 +83,7 @@ export default function RegisterInstitution() {
             <Row colorText={colors.textSecondary} text="Once verified, the INS identity is activated for you." />
           </Card>
 
-          <Button label="Submit for verification" onPress={submit} disabled={!canSubmit} loading={submitting} testID="ins-submit" />
+          <Button label="Submit for verification" onPress={submit} disabled={!canSubmit} loading={register.isPending} testID="ins-submit" />
           <T variant="caption" color={colors.muted} style={{ textAlign: "center" }}>
             Submitting does not create an institution. It starts a verification request.
           </T>

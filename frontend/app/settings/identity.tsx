@@ -202,8 +202,15 @@ export default function Identity() {
             </View>
           </View>
           <Button
-            label="Register an Institution (INS)"
+            label="View my institutions"
             variant="secondary"
+            icon="business-outline"
+            onPress={() => router.push("/ins")}
+            testID="view-institutions"
+          />
+          <Button
+            label="Register an Institution (INS)"
+            variant="ghost"
             icon="add-circle-outline"
             onPress={() => router.push("/settings/register-institution")}
             testID="register-institution"

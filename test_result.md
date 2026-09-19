@@ -111,8 +111,22 @@
   Also restored missing .env and fixed web render/robustness (nav-ready guard, non-blocking fonts,
   bootstrap timeout, asyncRoutes:false, expo SDK 57 version alignment).
 
-## frontend:
-##   - task: "Profile IA (remove standalone Identity; add About Traksha; rename Settings->Preferences)"
+## backend:
+##   - task: "INS Phase A: registration, verification/approval, ownership, profile, members, custom roles, permissions, scope, role assignment approval, authorization enforcement"
+##     implemented: true
+##     working: true
+##     file: "backend/server.py"
+##     stuck_count: 0
+##     priority: "high"
+##     needs_retesting: false
+##     status_history:
+##         -working: "NA"
+##         -agent: "main"
+##         -comment: "Implemented full INS Phase A. Collections: institutions, ins_members, ins_roles, ins_permissions (seeded catalog), ins_approvals. Endpoints (all /api): GET /ins/permissions/catalog; POST /ins/register (creates PENDING app + approval record, NOT instant activation); GET /ins/mine; POST /ins/dev/grant-admin (dev verifier); GET /ins/admin/applications; POST /ins/admin/applications/{id}/approve|reject (sets owner + owner-member on approve); GET /ins/{id}; PUT /ins/{id}/profile; GET/POST /ins/{id}/members, DELETE /ins/{id}/members/{mid}; GET/POST/PUT/DELETE /ins/{id}/roles(/{rid}); POST/DELETE /ins/{id}/members/{mid}/roles(/{aid}) for nominate/revoke; GET /ins/{id}/approvals; POST /ins/{id}/approvals/{aid}/approve|reject. Authorization service resolve_authority + require_perm enforces Institution->Role->Permission->Scope. Ownership grants '*'; members get aggregated perms from ACTIVE role assignments only. Curl smoke test passed all 12 scenarios (non-member 403, pending-role 403, post-approval permission granted, role mgmt restricted). Needs formal retest."
+##         -working: true
+##         -agent: "testing"
+##         -comment: "✅ ALL 13 SCENARIOS PASSED. Comprehensive backend testing completed successfully. (1) REGISTRATION: Institution created with PENDING status (not instant). (2) GET /ins/mine: Pending institution correctly listed. (3) PENDING ACCESS: Non-member gets 403, owner cannot update profile while pending (403). (4) VERIFICATION/APPROVAL: Dev grant-admin works, non-admin gets 403 for admin endpoints, admin can list/approve applications. (5) OWNERSHIP: After approval, owner has is_owner=true and permissions=['*'], owner-member record created. (6) PROFILE: Owner can update institution profile after approval. (7) MEMBER ASSOCIATION: Add member by identity_code works (200), bogus code returns 404. (8) CUSTOM ROLE: Permissions catalog available, role creation with permissions and scope works, invalid permission returns 400, invalid scope type returns 400. (9) AUTHORIZATION ENFORCEMENT: Member without roles gets 403 for protected actions (role creation, member addition), can view members/roles (200). (10) ROLE ASSIGNMENT + APPROVAL: Assignment creates pending approval, member cannot use permission while pending (403), approval list works, approve works, member gains permission after approval (404 not 403 for bogus code = permission passed), member still cannot manage roles (403). (11) SCOPE: Scope persists in role definition and role assignment. (12) REVOKE: Role revocation works (200), member loses permission after revocation (403). (13) REGRESSION: All existing identity endpoints work (register, login, /auth/me, /identity/me, simulate-transition, search). Backend authorization correctly enforces Institution->Role->Permission->Scope hierarchy. Ownership grants all permissions; members only get permissions from ACTIVE role assignments."
+
 ##     implemented: true
 ##     working: true
 ##     file: "app/(app)/profile.tsx"
@@ -168,9 +182,7 @@
 
 ## test_plan:
 ##   current_focus:
-##     - "Profile IA"
-##     - "Preferences screen"
-##     - "Identity screen TMP vs TRK distinct presentation + INS registration + dev tool at bottom"
+##     - "INS Phase A: registration, verification/approval, ownership, profile, members, custom roles, permissions, scope, role assignment approval, authorization enforcement"
 ##   test_all: false
 ##   test_priority: "high_first"
 
@@ -194,3 +206,17 @@
 ##        TMP and TRK presentations look too similar. Register Institution screen missing prominent 
 ##        'Not instant' and 'verification' messaging. Developer tool positioning is correct (below INS button).
 ##        No blank screens detected. All core navigation and architecture requirements met.
+##     -agent: "testing"
+##     -message: >
+##        INS Phase A backend testing COMPLETE - ALL 13 SCENARIOS PASSED ✅. Tested full flow with 2 users (owner + member):
+##        Registration creates PENDING institution (not instant), pending access restrictions enforced (403 for non-members and profile updates),
+##        verification/approval workflow works (dev grant-admin, admin-only endpoints, approve transitions to approved status),
+##        ownership correctly established after approval (is_owner=true, permissions=['*'], owner-member record created),
+##        profile management works post-approval, member association by identity_code works (404 for bogus codes),
+##        custom roles with permissions and scope work (catalog available, validation enforces valid permissions/scopes),
+##        authorization enforcement works (members without roles get 403 for protected actions, can view members/roles),
+##        role assignment + approval workflow complete (pending approval created, permissions not usable while pending, approval grants permissions),
+##        scope persists in roles and assignments, revocation works (member loses permissions), and all existing identity endpoints
+##        remain functional (register, login, /auth/me, /identity/me, simulate-transition, search). Backend correctly enforces
+##        Institution->Role->Permission->Scope->Approval->Person hierarchy. Role != Permission != Ownership verified.
+##        Backend enforces authorization (not relying on frontend). No issues found.

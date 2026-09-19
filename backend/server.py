@@ -19,7 +19,7 @@ import string
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Dict, Set, Any
+from typing import Optional, Dict, Set, Any, List
 
 import jwt
 import requests
@@ -152,6 +152,14 @@ async def ensure_indexes():
     await db.remote_sessions.create_index("token", unique=True)
     await db.messages.create_index([("conversation_id", 1), ("created_at", 1)])
     await db.notifications.create_index([("user_id", 1), ("created_at", -1)])
+    await db.institutions.create_index("owner_user_id")
+    await db.institutions.create_index("applicant_user_id")
+    await db.institutions.create_index("status")
+    await db.ins_members.create_index([("ins_id", 1), ("user_id", 1)], unique=True)
+    await db.ins_members.create_index("user_id")
+    await db.ins_roles.create_index("ins_id")
+    await db.ins_approvals.create_index([("ins_id", 1), ("kind", 1), ("state", 1)])
+    await db.ins_permissions.create_index("key", unique=True)
 
 
 SEED_CONTRIBUTIONS = [
@@ -191,6 +199,51 @@ async def seed_content():
             })
         await db.contributions.insert_many(docs)
         logger.info("Seeded Tattvaloka content.")
+
+
+# ---------------------------------------------------------------------------
+# INS: permission catalog + scope model (reusable authorization primitives)
+# ---------------------------------------------------------------------------
+PERMISSION_CATALOG = [
+    {"key": "institution:manage", "resource": "institution", "action": "manage",
+     "label": "Manage institution profile", "category": "Institution",
+     "description": "Edit the institution's profile, details and official presence."},
+    {"key": "members:view", "resource": "members", "action": "view",
+     "label": "View people", "category": "People",
+     "description": "See the institution's people/roster."},
+    {"key": "members:invite", "resource": "members", "action": "invite",
+     "label": "Add people", "category": "People",
+     "description": "Associate existing Traksha users with the institution."},
+    {"key": "members:remove", "resource": "members", "action": "remove",
+     "label": "Remove people", "category": "People",
+     "description": "Remove people from the institution."},
+    {"key": "roles:view", "resource": "roles", "action": "view",
+     "label": "View roles", "category": "Roles",
+     "description": "See defined roles and their permissions."},
+    {"key": "roles:manage", "resource": "roles", "action": "manage",
+     "label": "Create & edit roles", "category": "Roles",
+     "description": "Create, edit and delete custom roles and their permissions."},
+    {"key": "roles:assign", "resource": "roles", "action": "assign",
+     "label": "Assign roles", "category": "Roles",
+     "description": "Nominate people for roles."},
+    {"key": "approvals:manage", "resource": "approvals", "action": "manage",
+     "label": "Approve assignments", "category": "Approvals",
+     "description": "Approve or reject role assignments and nominations."},
+    {"key": "communication:post", "resource": "communication", "action": "post",
+     "label": "Institutional communication", "category": "Communication",
+     "description": "Speak officially on behalf of the institution (Phase B)."},
+    {"key": "resources:view", "resource": "resources", "action": "view",
+     "label": "View resources", "category": "Resources",
+     "description": "View institutional projects and resources (Phase B)."},
+]
+CATALOG_KEYS = {p["key"] for p in PERMISSION_CATALOG}
+SCOPE_TYPES = ["institution", "department", "project", "resource"]
+
+
+async def seed_permissions():
+    for p in PERMISSION_CATALOG:
+        await db.ins_permissions.update_one(
+            {"key": p["key"]}, {"$set": {**p, "_id": p["key"]}}, upsert=True)
 
 
 async def run_transition(user: dict) -> Optional[dict]:
@@ -246,6 +299,7 @@ async def scheduler_loop():
 async def lifespan(app: FastAPI):
     await ensure_indexes()
     await seed_content()
+    await seed_permissions()
     try:
         await run_in_threadpool(init_storage)
     except Exception as e:  # noqa
@@ -1601,6 +1655,602 @@ async def simulate_transition(u: dict = Depends(require_user)):
     if not updated:
         raise HTTPException(500, "Transition failed")
     return {"ok": True, "trk_code": updated.get("trk_code")}
+
+
+# ===========================================================================
+# INS: INSTITUTIONS  (Person != Institution, Role != Permission != Ownership)
+#   Institution -> Custom Role -> Permission -> Scope -> Approval -> Person
+# ===========================================================================
+async def resolve_authority(user_id: str, ins_id: str) -> Optional[dict]:
+    """Compute a person's authority within an institution: ownership +
+    aggregated permissions from *active* role assignments (+ scopes)."""
+    ins = await db.institutions.find_one({"_id": ins_id, "deleted_at": None})
+    if not ins:
+        return None
+    member = await db.ins_members.find_one(
+        {"ins_id": ins_id, "user_id": user_id, "status": "active"})
+    is_owner = ins.get("owner_user_id") == user_id
+    perms: Set[str] = set()
+    scopes: List[dict] = []
+    relationship = None
+    if is_owner:
+        # Ownership is authority in itself; it is NOT a role.
+        perms = {"*"}
+        relationship = "owner"
+    elif member:
+        relationship = member.get("relationship")
+        active_role_ids = [r["role_id"] for r in member.get("roles", [])
+                           if r.get("state") == "active"]
+        if active_role_ids:
+            async for role in db.ins_roles.find(
+                    {"_id": {"$in": active_role_ids}, "ins_id": ins_id}):
+                for p in role.get("permissions", []):
+                    perms.add(p)
+                if role.get("scope"):
+                    scopes.append(role["scope"])
+    return {"ins": ins, "member": member, "is_owner": is_owner,
+            "relationship": relationship, "perms": perms, "scopes": scopes}
+
+
+def authority_can(authority: Optional[dict], key: str) -> bool:
+    if not authority:
+        return False
+    perms = authority.get("perms", set())
+    if "*" in perms or key in perms:
+        return True
+    return f"{key.split(':')[0]}:*" in perms
+
+
+async def require_authority(user: dict, ins_id: str) -> dict:
+    a = await resolve_authority(user["_id"], ins_id)
+    if not a:
+        raise HTTPException(404, "Institution not found")
+    if not a["member"] and not a["is_owner"]:
+        raise HTTPException(403, "You are not associated with this institution")
+    return a
+
+
+async def require_perm(user: dict, ins_id: str, key: str) -> dict:
+    a = await require_authority(user, ins_id)
+    if a["ins"].get("status") != "approved":
+        raise HTTPException(400, "Institution is not active")
+    if not authority_can(a, key):
+        raise HTTPException(403, "You do not have permission for this action")
+    return a
+
+
+async def require_admin(u: dict = Depends(require_user)) -> dict:
+    if not u.get("is_admin"):
+        raise HTTPException(403, "Platform administrator access required")
+    return u
+
+
+def validate_permissions(perms: List[str]) -> List[str]:
+    invalid = [p for p in perms if p not in CATALOG_KEYS]
+    if invalid:
+        raise HTTPException(400, f"Unknown permissions: {', '.join(invalid)}")
+    return list(dict.fromkeys(perms))
+
+
+def validate_scope(scope: "INSRoleScope") -> dict:
+    if scope.type not in SCOPE_TYPES:
+        raise HTTPException(400, f"Unknown scope type: {scope.type}")
+    return {"type": scope.type, "ref": scope.ref, "label": scope.label}
+
+
+# --- serializers -----------------------------------------------------------
+def serialize_ins(ins: dict, authority: Optional[dict] = None,
+                  include_private: bool = False) -> dict:
+    data = {
+        "id": ins["_id"], "name": ins.get("name"),
+        "legal_name": ins.get("legal_name"), "category": ins.get("category"),
+        "description": ins.get("description"), "email": ins.get("email"),
+        "website": ins.get("website"), "location": ins.get("location"),
+        "photo_url": ins.get("photo_url"), "status": ins.get("status"),
+        "created_at": iso(ins.get("created_at")),
+    }
+    if authority is not None:
+        perms = authority.get("perms", set())
+        data["is_owner"] = authority.get("is_owner", False)
+        data["my_relationship"] = authority.get("relationship")
+        data["my_permissions"] = ["*"] if "*" in perms else sorted(perms)
+    if include_private:
+        data["owner_user_id"] = ins.get("owner_user_id")
+        data["applicant_user_id"] = ins.get("applicant_user_id")
+        data["application"] = ins.get("application")
+        data["rejection_reason"] = ins.get("rejection_reason")
+        data["decided_at"] = iso(ins.get("decided_at"))
+    return data
+
+
+def serialize_assignment(r: dict) -> dict:
+    return {
+        "assignment_id": r.get("assignment_id"), "role_id": r.get("role_id"),
+        "role_name": r.get("role_name"), "state": r.get("state"),
+        "scope": r.get("scope"), "created_at": iso(r.get("created_at")),
+        "decided_at": iso(r.get("decided_at")),
+    }
+
+
+def serialize_member(m: dict, usr: Optional[dict]) -> dict:
+    return {
+        "id": m["_id"], "user": public_profile(usr) if usr else None,
+        "relationship": m.get("relationship"), "title": m.get("title"),
+        "status": m.get("status"),
+        "roles": [serialize_assignment(r) for r in m.get("roles", [])
+                  if r.get("state") in ("pending_approval", "active")],
+        "created_at": iso(m.get("created_at")),
+    }
+
+
+def serialize_role(r: dict) -> dict:
+    return {
+        "id": r["_id"], "name": r.get("name"), "description": r.get("description"),
+        "permissions": r.get("permissions", []),
+        "scope": r.get("scope", {"type": "institution"}),
+        "is_system": r.get("is_system", False),
+        "created_at": iso(r.get("created_at")),
+    }
+
+
+async def ensure_owner_member(ins_id: str, user_id: str, title: Optional[str] = None) -> str:
+    existing = await db.ins_members.find_one({"ins_id": ins_id, "user_id": user_id})
+    if existing:
+        await db.ins_members.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"relationship": "owner", "status": "active", "title": title}})
+        return existing["_id"]
+    mid = new_id()
+    await db.ins_members.insert_one({
+        "_id": mid, "id": mid, "ins_id": ins_id, "user_id": user_id,
+        "relationship": "owner", "status": "active", "title": title,
+        "roles": [], "added_by": None, "created_at": now_utc(),
+    })
+    return mid
+
+
+# --- models -----------------------------------------------------------------
+class INSRegisterIn(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    category: Optional[str] = Field(default=None, max_length=60)
+    email: EmailStr
+    website: Optional[str] = Field(default=None, max_length=200)
+    location: Optional[str] = Field(default=None, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=1000)
+    applicant_role: str = Field(min_length=2, max_length=80)
+    justification: Optional[str] = Field(default=None, max_length=1000)
+
+
+class INSProfileUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=120)
+    category: Optional[str] = Field(default=None, max_length=60)
+    website: Optional[str] = Field(default=None, max_length=200)
+    location: Optional[str] = Field(default=None, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=1000)
+    email: Optional[EmailStr] = None
+
+
+class INSMemberAddIn(BaseModel):
+    identity_code: str = Field(min_length=4, max_length=32)
+    title: Optional[str] = Field(default=None, max_length=80)
+
+
+class INSRoleScope(BaseModel):
+    type: str = "institution"
+    ref: Optional[str] = None
+    label: Optional[str] = None
+
+
+class INSRoleIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    description: Optional[str] = Field(default=None, max_length=500)
+    permissions: List[str] = Field(default_factory=list)
+    scope: INSRoleScope = Field(default_factory=INSRoleScope)
+
+
+class INSRoleAssignIn(BaseModel):
+    role_id: str
+
+
+class INSRejectIn(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+# --- catalog ----------------------------------------------------------------
+@api.get("/ins/permissions/catalog")
+async def ins_permission_catalog(u: dict = Depends(require_user)):
+    return {"permissions": PERMISSION_CATALOG, "scopes": SCOPE_TYPES}
+
+
+# --- registration + my institutions ----------------------------------------
+@api.post("/ins/register")
+async def ins_register(body: INSRegisterIn, u: dict = Depends(require_user)):
+    ins_id = new_id()
+    now = now_utc()
+    ins = {
+        "_id": ins_id, "id": ins_id, "name": body.name.strip(),
+        "legal_name": body.name.strip(), "category": body.category,
+        "email": body.email.lower(), "website": body.website,
+        "location": body.location, "description": body.description,
+        "photo_url": None, "status": "pending", "owner_user_id": None,
+        "applicant_user_id": u["_id"],
+        "application": {"applicant_role": body.applicant_role,
+                        "justification": body.justification},
+        "created_at": now, "decided_at": None, "decided_by": None,
+        "rejection_reason": None, "deleted_at": None,
+    }
+    await db.institutions.insert_one(ins)
+    ap_id = new_id()
+    await db.ins_approvals.insert_one({
+        "_id": ap_id, "id": ap_id, "ins_id": ins_id,
+        "kind": "institution_registration", "subject": {"ins_id": ins_id},
+        "state": "pending", "requested_by": u["_id"], "decided_by": None,
+        "decided_at": None, "reason": None, "created_at": now,
+    })
+    return {"institution": serialize_ins(ins, include_private=True)}
+
+
+@api.get("/ins/mine")
+async def ins_mine(u: dict = Depends(require_user)):
+    out = []
+    seen: Set[str] = set()
+    async for m in db.ins_members.find({"user_id": u["_id"], "status": "active"}):
+        ins = await db.institutions.find_one({"_id": m["ins_id"], "deleted_at": None})
+        if not ins:
+            continue
+        a = await resolve_authority(u["_id"], ins["_id"])
+        out.append(serialize_ins(ins, authority=a))
+        seen.add(ins["_id"])
+    async for ins in db.institutions.find(
+            {"applicant_user_id": u["_id"], "deleted_at": None}):
+        if ins["_id"] in seen:
+            continue
+        out.append(serialize_ins(ins, include_private=True))
+    return {"institutions": out}
+
+
+# --- platform verification (admin) ------------------------------------------
+@api.post("/ins/dev/grant-admin")
+async def ins_dev_grant_admin(u: dict = Depends(require_user)):
+    """Honest dev tool: real external legal/document verification is not
+    implemented. This grants the current user the platform-verifier role so the
+    genuine pending -> approved/rejected workflow can be exercised end to end."""
+    await db.users.update_one({"_id": u["_id"]}, {"$set": {"is_admin": True}})
+    return {"ok": True, "is_admin": True}
+
+
+@api.get("/ins/admin/applications")
+async def ins_admin_applications(u: dict = Depends(require_admin)):
+    out = []
+    async for ins in db.institutions.find(
+            {"status": "pending", "deleted_at": None}).sort("created_at", 1):
+        applicant = await db.users.find_one({"_id": ins.get("applicant_user_id")})
+        d = serialize_ins(ins, include_private=True)
+        d["applicant"] = public_profile(applicant) if applicant else None
+        out.append(d)
+    return {"applications": out}
+
+
+@api.post("/ins/admin/applications/{ins_id}/approve")
+async def ins_admin_approve(ins_id: str, u: dict = Depends(require_admin)):
+    ins = await db.institutions.find_one({"_id": ins_id, "deleted_at": None})
+    if not ins:
+        raise HTTPException(404, "Institution not found")
+    if ins["status"] != "pending":
+        raise HTTPException(400, "This application has already been decided")
+    now = now_utc()
+    owner_id = ins["applicant_user_id"]
+    await db.institutions.update_one({"_id": ins_id}, {"$set": {
+        "status": "approved", "owner_user_id": owner_id,
+        "decided_at": now, "decided_by": u["_id"]}})
+    await ensure_owner_member(ins_id, owner_id,
+                              (ins.get("application") or {}).get("applicant_role"))
+    await db.ins_approvals.update_one(
+        {"ins_id": ins_id, "kind": "institution_registration"},
+        {"$set": {"state": "approved", "decided_by": u["_id"], "decided_at": now}})
+    await create_notification(
+        owner_id, "ins", "Institution verified",
+        f"{ins['name']} has been verified. You are now its owner.",
+        {"route": f"/ins/{ins_id}"})
+    fresh = await db.institutions.find_one({"_id": ins_id})
+    return {"institution": serialize_ins(fresh, include_private=True)}
+
+
+@api.post("/ins/admin/applications/{ins_id}/reject")
+async def ins_admin_reject(ins_id: str, body: INSRejectIn,
+                           u: dict = Depends(require_admin)):
+    ins = await db.institutions.find_one({"_id": ins_id, "deleted_at": None})
+    if not ins:
+        raise HTTPException(404, "Institution not found")
+    if ins["status"] != "pending":
+        raise HTTPException(400, "This application has already been decided")
+    now = now_utc()
+    await db.institutions.update_one({"_id": ins_id}, {"$set": {
+        "status": "rejected", "decided_at": now, "decided_by": u["_id"],
+        "rejection_reason": body.reason}})
+    await db.ins_approvals.update_one(
+        {"ins_id": ins_id, "kind": "institution_registration"},
+        {"$set": {"state": "rejected", "decided_by": u["_id"],
+                  "decided_at": now, "reason": body.reason}})
+    await create_notification(
+        ins["applicant_user_id"], "ins", "Institution application declined",
+        body.reason or f"{ins['name']} was not approved.",
+        {"route": f"/ins/{ins_id}"})
+    return {"ok": True}
+
+
+# --- institution detail + profile -------------------------------------------
+@api.get("/ins/{ins_id}")
+async def ins_detail(ins_id: str, u: dict = Depends(require_user)):
+    ins = await db.institutions.find_one({"_id": ins_id, "deleted_at": None})
+    if not ins:
+        raise HTTPException(404, "Institution not found")
+    a = await resolve_authority(u["_id"], ins_id)
+    is_applicant = ins.get("applicant_user_id") == u["_id"]
+    is_member = bool(a and (a["member"] or a["is_owner"]))
+    if not is_member and not is_applicant and not u.get("is_admin"):
+        raise HTTPException(403, "You are not associated with this institution")
+    include_private = is_applicant or (a and a["is_owner"]) or bool(u.get("is_admin"))
+    return {"institution": serialize_ins(ins, authority=a, include_private=include_private)}
+
+
+@api.put("/ins/{ins_id}/profile")
+async def ins_update_profile(ins_id: str, body: INSProfileUpdate,
+                             u: dict = Depends(require_user)):
+    await require_perm(u, ins_id, "institution:manage")
+    updates = {k: v for k, v in body.dict(exclude_unset=True).items() if v is not None}
+    if "email" in updates:
+        updates["email"] = updates["email"].lower()
+    if updates:
+        await db.institutions.update_one({"_id": ins_id}, {"$set": updates})
+    fresh = await db.institutions.find_one({"_id": ins_id})
+    a = await resolve_authority(u["_id"], ins_id)
+    return {"institution": serialize_ins(fresh, authority=a, include_private=True)}
+
+
+# --- people / members -------------------------------------------------------
+@api.get("/ins/{ins_id}/members")
+async def ins_members_list(ins_id: str, u: dict = Depends(require_user)):
+    await require_authority(u, ins_id)
+    out = []
+    async for m in db.ins_members.find({"ins_id": ins_id, "status": "active"}):
+        usr = await db.users.find_one({"_id": m["user_id"]})
+        out.append(serialize_member(m, usr))
+    return {"members": out}
+
+
+@api.post("/ins/{ins_id}/members")
+async def ins_add_member(ins_id: str, body: INSMemberAddIn,
+                         u: dict = Depends(require_user)):
+    a = await require_perm(u, ins_id, "members:invite")
+    target = await db.users.find_one(
+        {"identity_code": body.identity_code.strip().upper(), "deleted_at": None})
+    if not target:
+        raise HTTPException(404, "No Traksha person found with that identity code")
+    existing = await db.ins_members.find_one(
+        {"ins_id": ins_id, "user_id": target["_id"]})
+    if existing and existing.get("status") == "active":
+        raise HTTPException(409, "This person is already associated with the institution")
+    if existing:
+        await db.ins_members.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"status": "active", "relationship": "member",
+                      "title": body.title, "added_by": u["_id"]}})
+        mid = existing["_id"]
+    else:
+        mid = new_id()
+        await db.ins_members.insert_one({
+            "_id": mid, "id": mid, "ins_id": ins_id, "user_id": target["_id"],
+            "relationship": "member", "status": "active", "title": body.title,
+            "roles": [], "added_by": u["_id"], "created_at": now_utc(),
+        })
+    await create_notification(
+        target["_id"], "ins", "Added to an institution",
+        f"You were added to {a['ins']['name']}.", {"route": f"/ins/{ins_id}"})
+    m = await db.ins_members.find_one({"_id": mid})
+    return {"member": serialize_member(m, target)}
+
+
+@api.delete("/ins/{ins_id}/members/{member_id}")
+async def ins_remove_member(ins_id: str, member_id: str,
+                            u: dict = Depends(require_user)):
+    await require_perm(u, ins_id, "members:remove")
+    m = await db.ins_members.find_one({"_id": member_id, "ins_id": ins_id})
+    if not m:
+        raise HTTPException(404, "Member not found")
+    if m.get("relationship") == "owner":
+        raise HTTPException(400, "The owner cannot be removed")
+    await db.ins_members.update_one(
+        {"_id": member_id}, {"$set": {"status": "removed", "roles": []}})
+    return {"ok": True}
+
+
+# --- custom roles -----------------------------------------------------------
+@api.get("/ins/{ins_id}/roles")
+async def ins_roles_list(ins_id: str, u: dict = Depends(require_user)):
+    await require_authority(u, ins_id)
+    out = []
+    async for r in db.ins_roles.find({"ins_id": ins_id}).sort("created_at", 1):
+        out.append(serialize_role(r))
+    return {"roles": out}
+
+
+@api.post("/ins/{ins_id}/roles")
+async def ins_create_role(ins_id: str, body: INSRoleIn,
+                          u: dict = Depends(require_user)):
+    await require_perm(u, ins_id, "roles:manage")
+    perms = validate_permissions(body.permissions)
+    scope = validate_scope(body.scope)
+    rid = new_id()
+    doc = {
+        "_id": rid, "id": rid, "ins_id": ins_id, "name": body.name.strip(),
+        "description": body.description, "permissions": perms, "scope": scope,
+        "is_system": False, "created_at": now_utc(), "updated_at": now_utc(),
+    }
+    await db.ins_roles.insert_one(doc)
+    return {"role": serialize_role(doc)}
+
+
+@api.put("/ins/{ins_id}/roles/{role_id}")
+async def ins_update_role(ins_id: str, role_id: str, body: INSRoleIn,
+                          u: dict = Depends(require_user)):
+    await require_perm(u, ins_id, "roles:manage")
+    role = await db.ins_roles.find_one({"_id": role_id, "ins_id": ins_id})
+    if not role:
+        raise HTTPException(404, "Role not found")
+    perms = validate_permissions(body.permissions)
+    scope = validate_scope(body.scope)
+    await db.ins_roles.update_one({"_id": role_id}, {"$set": {
+        "name": body.name.strip(), "description": body.description,
+        "permissions": perms, "scope": scope, "updated_at": now_utc()}})
+    # keep denormalized role_name on assignments in sync
+    await db.ins_members.update_many(
+        {"ins_id": ins_id, "roles.role_id": role_id},
+        {"$set": {"roles.$[r].role_name": body.name.strip()}},
+        array_filters=[{"r.role_id": role_id}])
+    fresh = await db.ins_roles.find_one({"_id": role_id})
+    return {"role": serialize_role(fresh)}
+
+
+@api.delete("/ins/{ins_id}/roles/{role_id}")
+async def ins_delete_role(ins_id: str, role_id: str,
+                          u: dict = Depends(require_user)):
+    await require_perm(u, ins_id, "roles:manage")
+    role = await db.ins_roles.find_one({"_id": role_id, "ins_id": ins_id})
+    if not role:
+        raise HTTPException(404, "Role not found")
+    await db.ins_members.update_many(
+        {"ins_id": ins_id}, {"$pull": {"roles": {"role_id": role_id}}})
+    await db.ins_approvals.update_many(
+        {"ins_id": ins_id, "kind": "role_assignment",
+         "subject.role_id": role_id, "state": "pending"},
+        {"$set": {"state": "rejected", "reason": "role deleted",
+                  "decided_at": now_utc()}})
+    await db.ins_roles.delete_one({"_id": role_id})
+    return {"ok": True}
+
+
+# --- role assignment + approval workflow ------------------------------------
+@api.post("/ins/{ins_id}/members/{member_id}/roles")
+async def ins_assign_role(ins_id: str, member_id: str, body: INSRoleAssignIn,
+                          u: dict = Depends(require_user)):
+    await require_perm(u, ins_id, "roles:assign")
+    m = await db.ins_members.find_one(
+        {"_id": member_id, "ins_id": ins_id, "status": "active"})
+    if not m:
+        raise HTTPException(404, "Member not found")
+    role = await db.ins_roles.find_one({"_id": body.role_id, "ins_id": ins_id})
+    if not role:
+        raise HTTPException(404, "Role not found")
+    for r in m.get("roles", []):
+        if r["role_id"] == role["_id"] and r["state"] in ("pending_approval", "active"):
+            raise HTTPException(409, "This role is already assigned or pending approval")
+    now = now_utc()
+    assignment_id = new_id()
+    assignment = {
+        "assignment_id": assignment_id, "role_id": role["_id"],
+        "role_name": role["name"], "state": "pending_approval",
+        "scope": role.get("scope"), "nominated_by": u["_id"],
+        "decided_by": None, "created_at": now, "decided_at": None,
+    }
+    await db.ins_members.update_one(
+        {"_id": member_id}, {"$push": {"roles": assignment}})
+    ap_id = new_id()
+    await db.ins_approvals.insert_one({
+        "_id": ap_id, "id": ap_id, "ins_id": ins_id, "kind": "role_assignment",
+        "subject": {"member_id": member_id, "assignment_id": assignment_id,
+                    "role_id": role["_id"], "user_id": m["user_id"],
+                    "role_name": role["name"]},
+        "state": "pending", "requested_by": u["_id"], "decided_by": None,
+        "decided_at": None, "reason": None, "created_at": now,
+    })
+    return {"assignment": serialize_assignment(assignment), "approval_id": ap_id}
+
+
+@api.delete("/ins/{ins_id}/members/{member_id}/roles/{assignment_id}")
+async def ins_revoke_role(ins_id: str, member_id: str, assignment_id: str,
+                          u: dict = Depends(require_user)):
+    await require_perm(u, ins_id, "roles:assign")
+    res = await db.ins_members.update_one(
+        {"_id": member_id, "ins_id": ins_id, "roles.assignment_id": assignment_id},
+        {"$set": {"roles.$.state": "revoked", "roles.$.decided_by": u["_id"],
+                  "roles.$.decided_at": now_utc()}})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Assignment not found")
+    await db.ins_approvals.update_one(
+        {"ins_id": ins_id, "kind": "role_assignment",
+         "subject.assignment_id": assignment_id, "state": "pending"},
+        {"$set": {"state": "rejected", "reason": "revoked",
+                  "decided_by": u["_id"], "decided_at": now_utc()}})
+    return {"ok": True}
+
+
+@api.get("/ins/{ins_id}/approvals")
+async def ins_approvals_list(ins_id: str, u: dict = Depends(require_user)):
+    await require_perm(u, ins_id, "approvals:manage")
+    out = []
+    async for ap in db.ins_approvals.find(
+            {"ins_id": ins_id, "kind": "role_assignment", "state": "pending"}
+    ).sort("created_at", 1):
+        subj = ap.get("subject", {})
+        usr = await db.users.find_one({"_id": subj.get("user_id")})
+        out.append({
+            "id": ap["_id"], "kind": ap["kind"], "state": ap["state"],
+            "role_name": subj.get("role_name"), "member_id": subj.get("member_id"),
+            "assignment_id": subj.get("assignment_id"),
+            "user": public_profile(usr) if usr else None,
+            "created_at": iso(ap.get("created_at")),
+        })
+    return {"approvals": out}
+
+
+@api.post("/ins/{ins_id}/approvals/{approval_id}/approve")
+async def ins_approval_approve(ins_id: str, approval_id: str,
+                               u: dict = Depends(require_user)):
+    await require_perm(u, ins_id, "approvals:manage")
+    ap = await db.ins_approvals.find_one(
+        {"_id": approval_id, "ins_id": ins_id, "kind": "role_assignment"})
+    if not ap:
+        raise HTTPException(404, "Approval not found")
+    if ap["state"] != "pending":
+        raise HTTPException(400, "This approval has already been decided")
+    subj = ap["subject"]
+    now = now_utc()
+    await db.ins_members.update_one(
+        {"_id": subj["member_id"], "roles.assignment_id": subj["assignment_id"]},
+        {"$set": {"roles.$.state": "active", "roles.$.decided_by": u["_id"],
+                  "roles.$.decided_at": now}})
+    await db.ins_approvals.update_one(
+        {"_id": approval_id},
+        {"$set": {"state": "approved", "decided_by": u["_id"], "decided_at": now}})
+    await create_notification(
+        subj["user_id"], "ins", "Role approved",
+        f"Your role '{subj['role_name']}' is now active.",
+        {"route": f"/ins/{ins_id}"})
+    return {"ok": True}
+
+
+@api.post("/ins/{ins_id}/approvals/{approval_id}/reject")
+async def ins_approval_reject(ins_id: str, approval_id: str, body: INSRejectIn,
+                              u: dict = Depends(require_user)):
+    await require_perm(u, ins_id, "approvals:manage")
+    ap = await db.ins_approvals.find_one(
+        {"_id": approval_id, "ins_id": ins_id, "kind": "role_assignment"})
+    if not ap:
+        raise HTTPException(404, "Approval not found")
+    if ap["state"] != "pending":
+        raise HTTPException(400, "This approval has already been decided")
+    subj = ap["subject"]
+    now = now_utc()
+    await db.ins_members.update_one(
+        {"_id": subj["member_id"], "roles.assignment_id": subj["assignment_id"]},
+        {"$set": {"roles.$.state": "rejected", "roles.$.decided_by": u["_id"],
+                  "roles.$.decided_at": now}})
+    await db.ins_approvals.update_one(
+        {"_id": approval_id},
+        {"$set": {"state": "rejected", "decided_by": u["_id"],
+                  "decided_at": now, "reason": body.reason}})
+    return {"ok": True}
 
 
 @api.get("/")
